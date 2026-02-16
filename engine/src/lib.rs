@@ -7,8 +7,8 @@
 pub mod models;
 pub mod storage;
 pub mod graph;       // In-memory graph algorithms (petgraph)
-// pub mod api;         // HTTP server for MCP (has compilation issues, needs fixing separately)
-// pub mod embeddings;  // Topology-derived embeddings
+pub mod api;         // HTTP server for MCP
+pub mod embeddings;  // Topology-derived embeddings
 // pub mod query;       // Hybrid retrieval (vector + graph)
 
 pub use models::{Triple, Node, Source};
