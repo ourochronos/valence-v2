@@ -23,6 +23,15 @@ use crate::{
 mod tools;
 use tools::*;
 
+// Import parameter and response types for the new high-level tools
+use tools::{
+    ContextForQueryParams, ContextForQueryResponse,
+    RecordFeedbackParams, RecordFeedbackResponse,
+    SessionStartParams, SessionStartResponse,
+    SessionEndParams, SessionEndResponse,
+    ExploreParams, ExploreResponse,
+};
+
 /// MCP server wrapper for ValenceEngine
 #[derive(Clone)]
 pub struct McpServer {
@@ -142,6 +151,85 @@ impl McpServer {
             .map_err(|e| e.to_string())
     }
 
+    // ========================================================================
+    // High-level tools leveraging new modules
+    // ========================================================================
+
+    /// Tool 8: context_for_query - Assemble optimal context using working set + budget + fusion scoring
+    #[tool(
+        name = "context_for_query",
+        description = "Assemble optimal context for a query using working set, budget constraints, and fusion scoring. Returns formatted context ready for LLM consumption."
+    )]
+    async fn context_for_query(
+        &self,
+        params: Parameters<ContextForQueryParams>,
+    ) -> Result<Json<ContextForQueryResponse>, String> {
+        tools::context_for_query_impl(&self.engine, params.0)
+            .await
+            .map(Json)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Tool 9: record_feedback - Record which triples from context were useful
+    #[tool(
+        name = "record_feedback",
+        description = "Record feedback about which triples were useful in the context. Boosts weights of useful triples and decays not-useful ones. Feeds the inference loop."
+    )]
+    async fn record_feedback(
+        &self,
+        params: Parameters<RecordFeedbackParams>,
+    ) -> Result<Json<RecordFeedbackResponse>, String> {
+        tools::record_feedback_impl(&self.engine, params.0)
+            .await
+            .map(Json)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Tool 10: session_start - Start a new session with working set lifecycle
+    #[tool(
+        name = "session_start",
+        description = "Start a new conversation session with an initial query. Creates a working set that evolves over the session."
+    )]
+    async fn session_start(
+        &self,
+        params: Parameters<SessionStartParams>,
+    ) -> Result<Json<SessionStartResponse>, String> {
+        tools::session_start_impl(&self.engine, params.0)
+            .await
+            .map(Json)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Tool 11: session_end - End a session
+    #[tool(
+        name = "session_end",
+        description = "End a conversation session. Archives resolved threads and cleans up session state."
+    )]
+    async fn session_end(
+        &self,
+        params: Parameters<SessionEndParams>,
+    ) -> Result<Json<SessionEndResponse>, String> {
+        tools::session_end_impl(&self.engine, params.0)
+            .await
+            .map(Json)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Tool 12: explore - Interactive graph exploration with tiered retrieval
+    #[tool(
+        name = "explore",
+        description = "Explore the knowledge graph interactively starting from a node. Uses tiered retrieval with budget constraints for efficient exploration."
+    )]
+    async fn explore(
+        &self,
+        params: Parameters<ExploreParams>,
+    ) -> Result<Json<ExploreResponse>, String> {
+        tools::explore_impl(&self.engine, params.0)
+            .await
+            .map(Json)
+            .map_err(|e| e.to_string())
+    }
+
     /// Run the MCP server on stdio
     pub async fn run_stdio(self) -> anyhow::Result<()> {
         tracing::info!("Starting MCP server on stdio");
@@ -162,9 +250,15 @@ impl ServerHandler for McpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             instructions: Some(
-                "Valence v2 Knowledge Engine: Triple-based knowledge substrate with topology-derived embeddings. \
-                 Use insert_triples to store knowledge, query_triples for pattern matching, search for semantic similarity, \
-                 neighbors for graph traversal, sources for provenance, stats for monitoring, and maintain for housekeeping."
+                "Valence v2 Knowledge Engine: Triple-based knowledge substrate with topology-derived embeddings.\n\
+                 \n\
+                 Low-level tools: insert_triples, query_triples, search, neighbors, sources, stats, maintain.\n\
+                 \n\
+                 High-level tools (NEW):\n\
+                 - context_for_query: Assemble optimal context using working set + budget + fusion scoring\n\
+                 - record_feedback: Record which triples were useful (feeds inference loop)\n\
+                 - session_start/session_end: Manage working set lifecycle\n\
+                 - explore: Interactive graph exploration with tiered retrieval"
                     .into()
             ),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
