@@ -96,7 +96,7 @@ impl DynamicConfidence {
     ///
     /// Uses PageRank as a measure of node importance.
     pub fn centrality_score(
-        graph: &GraphView,
+        _graph: &GraphView,
         node_id: NodeId,
         pagerank_scores: &HashMap<NodeId, f64>,
     ) -> f64 {

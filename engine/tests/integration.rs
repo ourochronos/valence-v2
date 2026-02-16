@@ -44,7 +44,7 @@ async fn test_insert_triples() {
 
     // Insert triples
     let response = client
-        .post(&format!("{}/triples", base_url))
+        .post(format!("{}/triples", base_url))
         .json(&json!({
             "triples": [
                 {
@@ -81,7 +81,7 @@ async fn test_query_triples() {
 
     // Insert test data
     client
-        .post(&format!("{}/triples", base_url))
+        .post(format!("{}/triples", base_url))
         .json(&json!({
             "triples": [
                 {
@@ -102,7 +102,7 @@ async fn test_query_triples() {
 
     // Query by subject
     let response = client
-        .get(&format!("{}/triples?subject=Alice", base_url))
+        .get(format!("{}/triples?subject=Alice", base_url))
         .send()
         .await
         .unwrap();
@@ -116,7 +116,7 @@ async fn test_query_triples() {
 
     // Query by predicate
     let response = client
-        .get(&format!("{}/triples?predicate=knows", base_url))
+        .get(format!("{}/triples?predicate=knows", base_url))
         .send()
         .await
         .unwrap();
@@ -130,7 +130,7 @@ async fn test_query_triples() {
 
     // Query by object
     let response = client
-        .get(&format!("{}/triples?object=NYC", base_url))
+        .get(format!("{}/triples?object=NYC", base_url))
         .send()
         .await
         .unwrap();
@@ -150,7 +150,7 @@ async fn test_neighbors() {
 
     // Insert a chain: Alice -> knows -> Bob -> knows -> Carol
     client
-        .post(&format!("{}/triples", base_url))
+        .post(format!("{}/triples", base_url))
         .json(&json!({
             "triples": [
                 {
@@ -171,7 +171,7 @@ async fn test_neighbors() {
 
     // Get neighbors of Alice with depth 1
     let response = client
-        .get(&format!("{}/nodes/Alice/neighbors?depth=1", base_url))
+        .get(format!("{}/nodes/Alice/neighbors?depth=1", base_url))
         .send()
         .await
         .unwrap();
@@ -183,7 +183,7 @@ async fn test_neighbors() {
 
     // Get neighbors of Alice with depth 2
     let response = client
-        .get(&format!("{}/nodes/Alice/neighbors?depth=2", base_url))
+        .get(format!("{}/nodes/Alice/neighbors?depth=2", base_url))
         .send()
         .await
         .unwrap();
@@ -202,7 +202,7 @@ async fn test_stats() {
 
     // Initial stats (empty)
     let response = client
-        .get(&format!("{}/stats", base_url))
+        .get(format!("{}/stats", base_url))
         .send()
         .await
         .unwrap();
@@ -215,7 +215,7 @@ async fn test_stats() {
 
     // Insert some triples
     client
-        .post(&format!("{}/triples", base_url))
+        .post(format!("{}/triples", base_url))
         .json(&json!({
             "triples": [
                 {
@@ -236,7 +236,7 @@ async fn test_stats() {
 
     // Check updated stats
     let response = client
-        .get(&format!("{}/stats", base_url))
+        .get(format!("{}/stats", base_url))
         .send()
         .await
         .unwrap();
@@ -256,7 +256,7 @@ async fn test_decay() {
 
     // Insert a triple
     client
-        .post(&format!("{}/triples", base_url))
+        .post(format!("{}/triples", base_url))
         .json(&json!({
             "triples": [
                 {
@@ -272,7 +272,7 @@ async fn test_decay() {
 
     // Decay by 50%
     let response = client
-        .post(&format!("{}/maintenance/decay", base_url))
+        .post(format!("{}/maintenance/decay", base_url))
         .json(&json!({
             "factor": 0.5,
             "min_weight": 0.0
@@ -288,7 +288,7 @@ async fn test_decay() {
 
     // Check that weight was updated
     let response = client
-        .get(&format!("{}/triples", base_url))
+        .get(format!("{}/triples", base_url))
         .send()
         .await
         .unwrap();
@@ -305,7 +305,7 @@ async fn test_evict() {
 
     // Insert two triples
     client
-        .post(&format!("{}/triples", base_url))
+        .post(format!("{}/triples", base_url))
         .json(&json!({
             "triples": [
                 {
@@ -326,7 +326,7 @@ async fn test_evict() {
 
     // Decay first triple below threshold
     client
-        .post(&format!("{}/maintenance/decay", base_url))
+        .post(format!("{}/maintenance/decay", base_url))
         .json(&json!({
             "factor": 0.3,
             "min_weight": 0.0
@@ -337,7 +337,7 @@ async fn test_evict() {
 
     // Evict below 0.5 (should remove both since both are at 0.3)
     let response = client
-        .post(&format!("{}/maintenance/evict", base_url))
+        .post(format!("{}/maintenance/evict", base_url))
         .json(&json!({
             "threshold": 0.5
         }))
@@ -352,7 +352,7 @@ async fn test_evict() {
 
     // Verify stats show 0 triples
     let response = client
-        .get(&format!("{}/stats", base_url))
+        .get(format!("{}/stats", base_url))
         .send()
         .await
         .unwrap();
@@ -368,7 +368,7 @@ async fn test_full_workflow() {
 
     // 1. Insert triples with source
     let insert_response = client
-        .post(&format!("{}/triples", base_url))
+        .post(format!("{}/triples", base_url))
         .json(&json!({
             "triples": [
                 {
@@ -390,7 +390,7 @@ async fn test_full_workflow() {
 
     // 2. Query triples
     let response = client
-        .get(&format!("{}/triples?subject=Alice", base_url))
+        .get(format!("{}/triples?subject=Alice", base_url))
         .send()
         .await
         .unwrap();
@@ -401,7 +401,7 @@ async fn test_full_workflow() {
 
     // 3. Get neighbors
     let response = client
-        .get(&format!("{}/nodes/Alice/neighbors", base_url))
+        .get(format!("{}/nodes/Alice/neighbors", base_url))
         .send()
         .await
         .unwrap();
@@ -412,7 +412,7 @@ async fn test_full_workflow() {
 
     // 4. Get stats
     let response = client
-        .get(&format!("{}/stats", base_url))
+        .get(format!("{}/stats", base_url))
         .send()
         .await
         .unwrap();
@@ -424,7 +424,7 @@ async fn test_full_workflow() {
 
     // 5. Decay
     let response = client
-        .post(&format!("{}/maintenance/decay", base_url))
+        .post(format!("{}/maintenance/decay", base_url))
         .json(&json!({
             "factor": 0.8,
             "min_weight": 0.0
@@ -437,7 +437,7 @@ async fn test_full_workflow() {
 
     // 6. Don't evict yet (weight is 0.8)
     let response = client
-        .post(&format!("{}/maintenance/evict", base_url))
+        .post(format!("{}/maintenance/evict", base_url))
         .json(&json!({
             "threshold": 0.5
         }))
@@ -450,7 +450,7 @@ async fn test_full_workflow() {
 
     // 7. Verify triple still exists
     let response = client
-        .get(&format!("{}/stats", base_url))
+        .get(format!("{}/stats", base_url))
         .send()
         .await
         .unwrap();
@@ -468,7 +468,7 @@ async fn test_post_triples_empty_body() {
 
     // POST with empty body should fail
     let response = client
-        .post(&format!("{}/triples", base_url))
+        .post(format!("{}/triples", base_url))
         .send()
         .await
         .unwrap();
@@ -484,7 +484,7 @@ async fn test_post_triples_malformed_json() {
 
     // POST with malformed JSON
     let response = client
-        .post(&format!("{}/triples", base_url))
+        .post(format!("{}/triples", base_url))
         .header("Content-Type", "application/json")
         .body("{invalid json}")
         .send()
@@ -502,7 +502,7 @@ async fn test_get_triples_no_query_params() {
 
     // Insert some test data
     client
-        .post(&format!("{}/triples", base_url))
+        .post(format!("{}/triples", base_url))
         .json(&json!({
             "triples": [
                 {
@@ -523,7 +523,7 @@ async fn test_get_triples_no_query_params() {
 
     // Query with no parameters (all wildcards) should return all triples
     let response = client
-        .get(&format!("{}/triples", base_url))
+        .get(format!("{}/triples", base_url))
         .send()
         .await
         .unwrap();
@@ -542,7 +542,7 @@ async fn test_get_neighbors_nonexistent_node() {
 
     // Try to get neighbors of non-existent node
     let response = client
-        .get(&format!("{}/nodes/999999/neighbors", base_url))
+        .get(format!("{}/nodes/999999/neighbors", base_url))
         .send()
         .await
         .unwrap();
@@ -564,7 +564,7 @@ async fn test_post_search_nonexistent_query_node() {
 
     // Insert some data
     client
-        .post(&format!("{}/triples", base_url))
+        .post(format!("{}/triples", base_url))
         .json(&json!({
             "triples": [
                 {
@@ -580,7 +580,7 @@ async fn test_post_search_nonexistent_query_node() {
 
     // Search with non-existent node
     let response = client
-        .post(&format!("{}/search", base_url))
+        .post(format!("{}/search", base_url))
         .json(&json!({
             "query": "NonExistentNode",
             "k": 5
@@ -600,7 +600,7 @@ async fn test_post_decay_invalid_factor() {
 
     // Try decay with negative factor
     let response = client
-        .post(&format!("{}/maintenance/decay", base_url))
+        .post(format!("{}/maintenance/decay", base_url))
         .json(&json!({
             "factor": -0.5,
             "min_weight": 0.0
@@ -621,7 +621,7 @@ async fn test_post_evict_negative_threshold() {
 
     // Insert a triple
     client
-        .post(&format!("{}/triples", base_url))
+        .post(format!("{}/triples", base_url))
         .json(&json!({
             "triples": [
                 {
@@ -637,7 +637,7 @@ async fn test_post_evict_negative_threshold() {
 
     // Try evict with negative threshold
     let response = client
-        .post(&format!("{}/maintenance/evict", base_url))
+        .post(format!("{}/maintenance/evict", base_url))
         .json(&json!({
             "threshold": -1.0
         }))
@@ -653,7 +653,7 @@ async fn test_post_evict_negative_threshold() {
 
     // Verify triple still exists
     let stats_response = client
-        .get(&format!("{}/stats", base_url))
+        .get(format!("{}/stats", base_url))
         .send()
         .await
         .unwrap();
@@ -669,7 +669,7 @@ async fn test_post_triples_missing_fields() {
 
     // POST with missing fields (no object)
     let response = client
-        .post(&format!("{}/triples", base_url))
+        .post(format!("{}/triples", base_url))
         .json(&json!({
             "triples": [
                 {
@@ -694,7 +694,7 @@ async fn test_get_neighbors_depth_zero() {
 
     // Insert test data
     client
-        .post(&format!("{}/triples", base_url))
+        .post(format!("{}/triples", base_url))
         .json(&json!({
             "triples": [
                 {
@@ -710,7 +710,7 @@ async fn test_get_neighbors_depth_zero() {
 
     // Get neighbors with depth=0
     let response = client
-        .get(&format!("{}/nodes/Alice/neighbors?depth=0", base_url))
+        .get(format!("{}/nodes/Alice/neighbors?depth=0", base_url))
         .send()
         .await
         .unwrap();
@@ -728,7 +728,7 @@ async fn test_stats_empty_database() {
 
     // Get stats on empty database
     let response = client
-        .get(&format!("{}/stats", base_url))
+        .get(format!("{}/stats", base_url))
         .send()
         .await
         .unwrap();
@@ -747,7 +747,7 @@ async fn test_post_triples_empty_triples_array() {
 
     // POST with empty triples array
     let response = client
-        .post(&format!("{}/triples", base_url))
+        .post(format!("{}/triples", base_url))
         .json(&json!({
             "triples": []
         }))
@@ -769,7 +769,7 @@ async fn test_decay_factor_greater_than_one() {
 
     // Insert a triple
     client
-        .post(&format!("{}/triples", base_url))
+        .post(format!("{}/triples", base_url))
         .json(&json!({
             "triples": [
                 {
@@ -785,7 +785,7 @@ async fn test_decay_factor_greater_than_one() {
 
     // Decay with factor > 1.0 (increases weights instead of decreasing)
     let response = client
-        .post(&format!("{}/maintenance/decay", base_url))
+        .post(format!("{}/maintenance/decay", base_url))
         .json(&json!({
             "factor": 2.0,
             "min_weight": 0.0
@@ -798,7 +798,7 @@ async fn test_decay_factor_greater_than_one() {
 
     // Check that weight increased
     let triples_response = client
-        .get(&format!("{}/triples", base_url))
+        .get(format!("{}/triples", base_url))
         .send()
         .await
         .unwrap();
@@ -815,7 +815,7 @@ async fn test_evict_threshold_above_one() {
 
     // Insert some triples
     client
-        .post(&format!("{}/triples", base_url))
+        .post(format!("{}/triples", base_url))
         .json(&json!({
             "triples": [
                 {
@@ -836,7 +836,7 @@ async fn test_evict_threshold_above_one() {
 
     // Evict with threshold > 1.0 (should evict everything since initial weight is 1.0)
     let response = client
-        .post(&format!("{}/maintenance/evict", base_url))
+        .post(format!("{}/maintenance/evict", base_url))
         .json(&json!({
             "threshold": 1.5
         }))
@@ -851,7 +851,7 @@ async fn test_evict_threshold_above_one() {
 
     // Verify all triples are gone
     let stats_response = client
-        .get(&format!("{}/stats", base_url))
+        .get(format!("{}/stats", base_url))
         .send()
         .await
         .unwrap();

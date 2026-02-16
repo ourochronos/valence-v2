@@ -57,7 +57,7 @@ async fn test_embeddings_workflow() {
     // Verify all similarities are in valid range [-1, 1]
     for (node_id, similarity) in &similar {
         assert!(
-            similarity >= &-1.0 && similarity <= &1.0,
+            (&-1.0..=&1.0).contains(&similarity),
             "Similarity for node {:?} should be in [-1, 1], got {}",
             node_id, similarity
         );

@@ -2,12 +2,11 @@
 //!
 //! HTTP server exposing the triple store API.
 
-use anyhow::{Result, Context};
+use anyhow::Result;
 use clap::Parser;
 use std::net::SocketAddr;
 use tokio::signal;
 use tracing::{info, warn};
-use tracing_subscriber;
 
 use valence_engine::{api::create_router, ValenceEngine};
 
@@ -63,7 +62,7 @@ async fn main() -> Result<()> {
 /// Initialize ValenceEngine with the appropriate storage backend
 async fn initialize_engine(database_url: Option<&str>) -> Result<ValenceEngine> {
     match database_url {
-        Some(url) => {
+        Some(_url) => {
             #[cfg(feature = "postgres")]
             {
                 info!("Initializing PostgreSQL storage backend");
@@ -96,6 +95,7 @@ async fn initialize_engine(database_url: Option<&str>) -> Result<ValenceEngine> 
 }
 
 /// Mask password in database URL for logging
+#[cfg(feature = "postgres")]
 fn mask_password(url: &str) -> String {
     if let Some(at_pos) = url.rfind('@') {
         if let Some(colon_pos) = url[..at_pos].rfind(':') {

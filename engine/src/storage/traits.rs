@@ -1,6 +1,5 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use std::sync::Arc;
 
 use crate::models::{Triple, TripleId, Node, NodeId, Source, SourceId};
 

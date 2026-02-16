@@ -12,7 +12,7 @@ use crate::{
     embeddings::EmbeddingStore,
     graph::{GraphView, DynamicConfidence},
     models::{Source, Triple},
-    storage::{MemoryStore, TriplePattern, TripleStore},
+    storage::{MemoryStore, TriplePattern},
 };
 
 mod types;
@@ -778,7 +778,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(&format!("/triples/{}/sources", triple_id))
+                    .uri(format!("/triples/{}/sources", triple_id))
                     .body(Body::empty())
                     .unwrap(),
             )

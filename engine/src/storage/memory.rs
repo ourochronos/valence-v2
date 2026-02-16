@@ -138,7 +138,7 @@ impl TripleStore for MemoryStore {
         for triple_id in triple_ids {
             triple_sources
                 .entry(triple_id)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(id);
         }
         
