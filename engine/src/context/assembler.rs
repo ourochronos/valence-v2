@@ -174,7 +174,7 @@ impl<'a> ContextAssembler<'a> {
                 };
 
                 // Combine similarity and confidence
-                let score = (avg_similarity as f64) * confidence;
+                let score = (avg_similarity as f64) * confidence.combined;
 
                 // Get node values for formatting
                 let subject_node = self.engine.store.get_node(triple.subject).await?
@@ -189,7 +189,7 @@ impl<'a> ContextAssembler<'a> {
                     object: object_node.value,
                     score,
                     confidence: if config.include_confidence {
-                        Some(*confidence)
+                        Some(confidence.combined)
                     } else {
                         None
                     },
@@ -220,7 +220,7 @@ impl<'a> ContextAssembler<'a> {
                     0.25
                 };
 
-                let score = proximity_score * confidence;
+                let score = proximity_score * confidence.combined;
 
                 // Get node values for formatting
                 let subject_node = self.engine.store.get_node(triple.subject).await?
@@ -235,7 +235,7 @@ impl<'a> ContextAssembler<'a> {
                     object: object_node.value,
                     score,
                     confidence: if config.include_confidence {
-                        Some(*confidence)
+                        Some(confidence.combined)
                     } else {
                         None
                     },
