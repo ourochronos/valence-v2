@@ -9,10 +9,12 @@ use crate::{
     embeddings::{EmbeddingStore, memory::MemoryEmbeddingStore, spectral, node2vec},
     stigmergy::AccessTracker,
     lifecycle::{LifecycleManager, DecayPolicy, MemoryBounds},
+    resilience::ResilienceManager,
 };
 
 /// ValenceEngine ties together the triple store, embedding store, access tracker,
-/// and lifecycle manager, providing unified knowledge management.
+/// lifecycle manager, and resilience manager, providing unified knowledge management
+/// with graceful degradation.
 #[derive(Clone)]
 pub struct ValenceEngine {
     /// The triple store (trait object for flexibility)
@@ -25,6 +27,8 @@ pub struct ValenceEngine {
     pub lifecycle: Arc<LifecycleManager>,
     /// Memory bounds configuration
     pub bounds: Arc<MemoryBounds>,
+    /// Resilience manager for graceful degradation
+    pub resilience: ResilienceManager,
 }
 
 impl ValenceEngine {
@@ -36,6 +40,7 @@ impl ValenceEngine {
             access_tracker: Arc::new(AccessTracker::new()),
             lifecycle: Arc::new(LifecycleManager::with_defaults()),
             bounds: Arc::new(MemoryBounds::default()),
+            resilience: ResilienceManager::new(),
         }
     }
     
@@ -47,6 +52,7 @@ impl ValenceEngine {
             access_tracker: Arc::new(AccessTracker::new()),
             lifecycle: Arc::new(LifecycleManager::new(policy)),
             bounds: Arc::new(bounds),
+            resilience: ResilienceManager::new(),
         }
     }
 
@@ -58,6 +64,7 @@ impl ValenceEngine {
             access_tracker: Arc::new(AccessTracker::new()),
             lifecycle: Arc::new(LifecycleManager::with_defaults()),
             bounds: Arc::new(MemoryBounds::default()),
+            resilience: ResilienceManager::new(),
         }
     }
 
@@ -69,6 +76,7 @@ impl ValenceEngine {
             access_tracker: Arc::new(AccessTracker::new()),
             lifecycle: Arc::new(LifecycleManager::with_defaults()),
             bounds: Arc::new(MemoryBounds::default()),
+            resilience: ResilienceManager::new(),
         }
     }
 
@@ -78,20 +86,28 @@ impl ValenceEngine {
     /// from the graph topology.
     pub async fn recompute_embeddings(&self, dimensions: usize) -> Result<usize> {
         // Compute embeddings from current graph
-        let embeddings_map = spectral::compute_embeddings(self.store.as_ref(), dimensions)
-            .await
-            .context("Failed to compute spectral embeddings")?;
+        match spectral::compute_embeddings(self.store.as_ref(), dimensions).await {
+            Ok(embeddings_map) => {
+                let count = embeddings_map.len();
 
-        let count = embeddings_map.len();
+                // Replace the embedding store with new embeddings
+                let new_store = MemoryEmbeddingStore::from_embeddings(embeddings_map)
+                    .context("Failed to create embedding store from computed embeddings")?;
 
-        // Replace the embedding store with new embeddings
-        let new_store = MemoryEmbeddingStore::from_embeddings(embeddings_map)
-            .context("Failed to create embedding store from computed embeddings")?;
+                let mut embeddings = self.embeddings.write().await;
+                *embeddings = new_store;
 
-        let mut embeddings = self.embeddings.write().await;
-        *embeddings = new_store;
+                // Record success
+                self.resilience.record_success("embeddings").await;
 
-        Ok(count)
+                Ok(count)
+            }
+            Err(e) => {
+                // Record failure
+                self.resilience.record_failure("embeddings", &e.to_string()).await;
+                Err(e)
+            }
+        }
     }
 
     /// Recompute Node2Vec embeddings from the current graph state

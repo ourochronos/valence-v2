@@ -16,7 +16,9 @@ use crate::{
 };
 
 mod types;
+mod resilience_endpoints;
 pub use types::*;
+use resilience_endpoints::{get_degradation_status, reset_degradation};
 
 /// API server state - uses ValenceEngine
 #[derive(Clone)]
@@ -65,6 +67,9 @@ pub fn create_router(engine: ValenceEngine) -> Router {
         .route("/stats/lifecycle", get(get_lifecycle_status))
         // Context assembly
         .route("/context", post(assemble_context))
+        // Resilience / degradation
+        .route("/resilience/status", get(get_degradation_status))
+        .route("/resilience/reset", post(reset_degradation))
         .with_state(state)
 }
 

@@ -106,6 +106,10 @@ pub enum ApiError {
     #[error("Invalid request: {0}")]
     InvalidRequest(String),
 
+    /// Bad request (client error)
+    #[error("Bad request: {0}")]
+    BadRequest(String),
+
     /// Resource not found
     #[error("Resource not found: {0}")]
     NotFound(String),
