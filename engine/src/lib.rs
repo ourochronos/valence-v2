@@ -11,6 +11,7 @@ pub mod graph;       // In-memory graph algorithms (petgraph)
 pub mod api;         // HTTP server for MCP
 pub mod embeddings;  // Topology-derived embeddings
 pub mod engine;      // Unified engine: storage + embeddings + lifecycle
+pub mod mcp;         // MCP (Model Context Protocol) server for OpenClaw integration
 // pub mod query;       // Hybrid retrieval (vector + graph)
 
 pub use error::{ValenceError, Result};

@@ -35,6 +35,9 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 # PostgreSQL support
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json"], optional = true }
+# MCP (Model Context Protocol) support
+rmcp = { version = "0.15", features = ["server", "transport-io"] }
+schemars = "1.2"  # Required for JsonSchema derives
 
 [dev-dependencies]
 tokio-test = "0.4"

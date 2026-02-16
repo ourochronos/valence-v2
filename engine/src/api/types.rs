@@ -1,17 +1,19 @@
 use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::models::SourceType;
 
 /// Request to insert one or more triples
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "mcp", derive(JsonSchema))]
 pub struct InsertTriplesRequest {
     pub triples: Vec<TripleInput>,
     pub source: Option<SourceInput>,
 }
 
 /// A triple to be inserted (string values, not IDs)
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TripleInput {
     pub subject: String,
     pub predicate: String,
@@ -19,7 +21,7 @@ pub struct TripleInput {
 }
 
 /// Source information for inserted triples
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SourceInput {
     #[serde(rename = "type")]
     pub source_type: SourceType,
@@ -27,7 +29,7 @@ pub struct SourceInput {
 }
 
 /// Response from inserting triples
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct InsertTriplesResponse {
     pub triple_ids: Vec<String>,
     pub source_id: Option<String>,
@@ -44,13 +46,13 @@ pub struct QueryTriplesParams {
 }
 
 /// Response from querying triples
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct QueryTriplesResponse {
     pub triples: Vec<TripleResponse>,
 }
 
 /// A triple in the response
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TripleResponse {
     pub id: String,
     pub subject: NodeResponse,
@@ -64,14 +66,14 @@ pub struct TripleResponse {
 }
 
 /// A node in the response
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct NodeResponse {
     pub id: String,
     pub value: String,
 }
 
 /// A source in the response
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SourceResponse {
     pub id: String,
     #[serde(rename = "type")]
@@ -88,7 +90,7 @@ pub struct NeighborsParams {
 }
 
 /// Response from neighbors endpoint
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct NeighborsResponse {
     pub triples: Vec<TripleResponse>,
     pub node_count: usize,
@@ -96,13 +98,13 @@ pub struct NeighborsResponse {
 }
 
 /// Response from sources endpoint
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SourcesResponse {
     pub sources: Vec<SourceResponse>,
 }
 
 /// Response from stats endpoint
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct StatsResponse {
     pub triple_count: u64,
     pub node_count: u64,
@@ -110,32 +112,32 @@ pub struct StatsResponse {
 }
 
 /// Request to trigger decay
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct DecayRequest {
     pub factor: f64,
     pub min_weight: f64,
 }
 
 /// Response from decay endpoint
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct DecayResponse {
     pub affected_count: u64,
 }
 
 /// Request to evict low-weight triples
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct EvictRequest {
     pub threshold: f64,
 }
 
 /// Response from evict endpoint
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct EvictResponse {
     pub evicted_count: u64,
 }
 
 /// Request to search for similar nodes
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SearchRequest {
     /// Node value to search for
     pub query_node: String,
@@ -152,7 +154,7 @@ fn default_k() -> usize {
 }
 
 /// A single search result
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SearchResult {
     pub node_id: String,
     pub value: String,
@@ -162,13 +164,13 @@ pub struct SearchResult {
 }
 
 /// Response from search endpoint
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SearchResponse {
     pub results: Vec<SearchResult>,
 }
 
 /// Request to recompute embeddings
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RecomputeEmbeddingsRequest {
     /// Number of dimensions for the embeddings
     #[serde(default = "default_dimensions")]
@@ -180,7 +182,7 @@ fn default_dimensions() -> usize {
 }
 
 /// Response from recompute-embeddings endpoint
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RecomputeEmbeddingsResponse {
     pub embedding_count: usize,
 }

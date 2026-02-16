@@ -14,11 +14,15 @@ use valence_engine::{api::create_router, ValenceEngine};
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Host to bind to
+    /// Server mode: http, mcp, or both
+    #[arg(long, env = "VALENCE_MODE", default_value = "http")]
+    mode: String,
+
+    /// Host to bind to (for HTTP mode)
     #[arg(long, env = "VALENCE_HOST", default_value = "127.0.0.1")]
     host: String,
 
-    /// Port to bind to
+    /// Port to bind to (for HTTP mode)
     #[arg(long, env = "VALENCE_PORT", default_value_t = 8421)]
     port: u16,
 
@@ -39,13 +43,41 @@ async fn main() -> Result<()> {
     info!("Initializing ValenceEngine...");
     let engine = initialize_engine(args.database_url.as_deref()).await?;
 
+    // Run server based on mode
+    match args.mode.as_str() {
+        "http" => {
+            info!("Starting in HTTP mode");
+            run_http_server(engine, &args).await?;
+        }
+        "mcp" => {
+            info!("Starting in MCP mode (stdio)");
+            run_mcp_server(engine).await?;
+        }
+        "both" => {
+            info!("Starting in both HTTP + MCP mode");
+            run_both_servers(engine, &args).await?;
+        }
+        mode => {
+            return Err(anyhow::anyhow!(
+                "Invalid mode: {}. Valid modes: http, mcp, both",
+                mode
+            ));
+        }
+    }
+
+    info!("Server shut down gracefully");
+    Ok(())
+}
+
+/// Run HTTP server only
+async fn run_http_server(engine: ValenceEngine, args: &Args) -> Result<()> {
     // Create the API router
     info!("Creating API router...");
     let app = create_router(engine);
 
     // Parse address
     let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
-    info!("Starting Valence Engine server on {}", addr);
+    info!("Starting Valence Engine HTTP server on {}", addr);
 
     // Create TCP listener
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -55,7 +87,46 @@ async fn main() -> Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
-    info!("Server shut down gracefully");
+    Ok(())
+}
+
+/// Run MCP server only (stdio)
+async fn run_mcp_server(engine: ValenceEngine) -> Result<()> {
+    use valence_engine::mcp::McpServer;
+    
+    let mcp_server = McpServer::new(engine);
+    mcp_server.run_stdio().await?;
+    
+    Ok(())
+}
+
+/// Run both HTTP and MCP servers concurrently
+async fn run_both_servers(engine: ValenceEngine, args: &Args) -> Result<()> {
+    use valence_engine::mcp::McpServer;
+    
+    // Create the API router
+    let app = create_router(engine.clone());
+    
+    // Parse address
+    let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
+    info!("Starting Valence Engine HTTP server on {}", addr);
+    
+    // Create TCP listener
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    
+    // Create MCP server
+    let mcp_server = McpServer::new(engine);
+    
+    // Run both concurrently
+    tokio::select! {
+        http_result = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()) => {
+            http_result?;
+        }
+        mcp_result = mcp_server.run_stdio() => {
+            mcp_result?;
+        }
+    }
+    
     Ok(())
 }
 

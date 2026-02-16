@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -10,7 +11,7 @@ pub type SourceId = Uuid;
 /// How a piece of knowledge was derived.
 ///
 /// Tracks the provenance of triples to support confidence scoring and explanation.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub enum SourceType {
     /// Direct statement from a conversation
     Conversation,

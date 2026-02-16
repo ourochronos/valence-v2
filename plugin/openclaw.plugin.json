@@ -1,0 +1,41 @@
+{
+  "id": "valence-v2",
+  "name": "Valence v2 Knowledge Engine",
+  "description": "Triple-based knowledge substrate with topology-derived embeddings for personal memory and reasoning",
+  "version": "0.1.0",
+  "kind": "memory",
+  "transport": "stdio",
+  "command": ["valence-engine", "--mode", "mcp"],
+  "tools": [
+    {
+      "name": "insert_triples",
+      "description": "Insert one or more triples (subject-predicate-object) with optional source provenance. Use this to store knowledge claims, facts, or relationships between entities."
+    },
+    {
+      "name": "query_triples",
+      "description": "Query triples by pattern matching. Supports wildcards by omitting subject, predicate, or object filters. Use this to retrieve stored knowledge by structure."
+    },
+    {
+      "name": "search",
+      "description": "Semantic search for nodes similar to a query node using topology-derived embeddings. Use this to find conceptually related knowledge even without exact matches."
+    },
+    {
+      "name": "neighbors",
+      "description": "Get k-hop neighborhood of a node - all triples within specified depth. Use this to explore the context and relationships around a concept."
+    },
+    {
+      "name": "sources",
+      "description": "Get provenance sources for a specific triple. Use this to understand where a piece of knowledge came from and assess its trustworthiness."
+    },
+    {
+      "name": "stats",
+      "description": "Get current engine statistics (triple count, node count, average weight). Use this to understand the current state and size of the knowledge base."
+    },
+    {
+      "name": "maintain",
+      "description": "Run maintenance operations: decay weights (reduce importance of old knowledge), evict low-weight triples (clean up noise), and recompute embeddings (update semantic relationships). Use this periodically to keep the knowledge base healthy."
+    }
+  ],
+  "resources": [],
+  "prompts": []
+}
