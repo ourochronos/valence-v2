@@ -13,6 +13,8 @@ pub mod embeddings;  // Topology-derived embeddings
 pub mod engine;      // Unified engine: storage + embeddings + lifecycle
 pub mod mcp;         // MCP (Model Context Protocol) server for OpenClaw integration
 pub mod stigmergy;   // Access tracking and co-retrieval clustering
+pub mod budget;      // Budget-bounded operations and tiered retrieval
+pub mod context;     // Context assembly: the read boundary for LLM agents
 // pub mod query;       // Hybrid retrieval (vector + graph)
 
 pub use error::{ValenceError, Result};

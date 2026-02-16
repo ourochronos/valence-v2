@@ -300,7 +300,12 @@ pub async fn search_impl(
         });
     }
 
-    Ok(SearchResponse { results })
+    Ok(SearchResponse {
+        results,
+        tier_reached: None,
+        time_ms: None,
+        budget_exhausted: None,
+    })
 }
 
 /// Get k-hop neighborhood
