@@ -458,3 +458,404 @@ async fn test_full_workflow() {
     let body: serde_json::Value = response.json().await.unwrap();
     assert_eq!(body["triple_count"], 1);
 }
+
+// === EDGE CASE TESTS ===
+
+#[tokio::test]
+async fn test_post_triples_empty_body() {
+    let (base_url, _server) = start_test_server().await;
+    let client = Client::new();
+
+    // POST with empty body should fail
+    let response = client
+        .post(&format!("{}/triples", base_url))
+        .send()
+        .await
+        .unwrap();
+
+    // Should return error status (400 or 422)
+    assert!(response.status().is_client_error());
+}
+
+#[tokio::test]
+async fn test_post_triples_malformed_json() {
+    let (base_url, _server) = start_test_server().await;
+    let client = Client::new();
+
+    // POST with malformed JSON
+    let response = client
+        .post(&format!("{}/triples", base_url))
+        .header("Content-Type", "application/json")
+        .body("{invalid json}")
+        .send()
+        .await
+        .unwrap();
+
+    // Should return 400 Bad Request
+    assert!(response.status().is_client_error());
+}
+
+#[tokio::test]
+async fn test_get_triples_no_query_params() {
+    let (base_url, _server) = start_test_server().await;
+    let client = Client::new();
+
+    // Insert some test data
+    client
+        .post(&format!("{}/triples", base_url))
+        .json(&json!({
+            "triples": [
+                {
+                    "subject": "Alice",
+                    "predicate": "knows",
+                    "object": "Bob"
+                },
+                {
+                    "subject": "Bob",
+                    "predicate": "knows",
+                    "object": "Carol"
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Query with no parameters (all wildcards) should return all triples
+    let response = client
+        .get(&format!("{}/triples", base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body: serde_json::Value = response.json().await.unwrap();
+    let triples = body["triples"].as_array().unwrap();
+    assert_eq!(triples.len(), 2); // Should return all triples
+}
+
+#[tokio::test]
+async fn test_get_neighbors_nonexistent_node() {
+    let (base_url, _server) = start_test_server().await;
+    let client = Client::new();
+
+    // Try to get neighbors of non-existent node
+    let response = client
+        .get(&format!("{}/nodes/999999/neighbors", base_url))
+        .send()
+        .await
+        .unwrap();
+
+    // Should return 404 or empty results
+    // (implementation dependent - might return 200 with empty results or 404)
+    assert!(response.status() == StatusCode::OK || response.status() == StatusCode::NOT_FOUND);
+    
+    if response.status() == StatusCode::OK {
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["triple_count"], 0);
+    }
+}
+
+#[tokio::test]
+async fn test_post_search_nonexistent_query_node() {
+    let (base_url, _server) = start_test_server().await;
+    let client = Client::new();
+
+    // Insert some data
+    client
+        .post(&format!("{}/triples", base_url))
+        .json(&json!({
+            "triples": [
+                {
+                    "subject": "A",
+                    "predicate": "rel",
+                    "object": "B"
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Search with non-existent node
+    let response = client
+        .post(&format!("{}/search", base_url))
+        .json(&json!({
+            "query": "NonExistentNode",
+            "k": 5
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Should return 200 with empty or error response
+    assert!(response.status() == StatusCode::OK || response.status().is_client_error());
+}
+
+#[tokio::test]
+async fn test_post_decay_invalid_factor() {
+    let (base_url, _server) = start_test_server().await;
+    let client = Client::new();
+
+    // Try decay with negative factor
+    let response = client
+        .post(&format!("{}/maintenance/decay", base_url))
+        .json(&json!({
+            "factor": -0.5,
+            "min_weight": 0.0
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Should succeed (no validation in current implementation)
+    // or fail with 400 if validation is added
+    assert!(response.status() == StatusCode::OK || response.status().is_client_error());
+}
+
+#[tokio::test]
+async fn test_post_evict_negative_threshold() {
+    let (base_url, _server) = start_test_server().await;
+    let client = Client::new();
+
+    // Insert a triple
+    client
+        .post(&format!("{}/triples", base_url))
+        .json(&json!({
+            "triples": [
+                {
+                    "subject": "A",
+                    "predicate": "rel",
+                    "object": "B"
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Try evict with negative threshold
+    let response = client
+        .post(&format!("{}/maintenance/evict", base_url))
+        .json(&json!({
+            "threshold": -1.0
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Should succeed and evict nothing (weights are never negative)
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["evicted_count"], 0);
+
+    // Verify triple still exists
+    let stats_response = client
+        .get(&format!("{}/stats", base_url))
+        .send()
+        .await
+        .unwrap();
+
+    let stats_body: serde_json::Value = stats_response.json().await.unwrap();
+    assert_eq!(stats_body["triple_count"], 1);
+}
+
+#[tokio::test]
+async fn test_post_triples_missing_fields() {
+    let (base_url, _server) = start_test_server().await;
+    let client = Client::new();
+
+    // POST with missing fields (no object)
+    let response = client
+        .post(&format!("{}/triples", base_url))
+        .json(&json!({
+            "triples": [
+                {
+                    "subject": "Alice",
+                    "predicate": "knows"
+                    // Missing "object"
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Should return 400 or 422 (validation error)
+    assert!(response.status().is_client_error());
+}
+
+#[tokio::test]
+async fn test_get_neighbors_depth_zero() {
+    let (base_url, _server) = start_test_server().await;
+    let client = Client::new();
+
+    // Insert test data
+    client
+        .post(&format!("{}/triples", base_url))
+        .json(&json!({
+            "triples": [
+                {
+                    "subject": "Alice",
+                    "predicate": "knows",
+                    "object": "Bob"
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Get neighbors with depth=0
+    let response = client
+        .get(&format!("{}/nodes/Alice/neighbors?depth=0", base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["triple_count"], 0); // Depth 0 should return nothing
+}
+
+#[tokio::test]
+async fn test_stats_empty_database() {
+    let (base_url, _server) = start_test_server().await;
+    let client = Client::new();
+
+    // Get stats on empty database
+    let response = client
+        .get(&format!("{}/stats", base_url))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["triple_count"], 0);
+    assert_eq!(body["node_count"], 0);
+}
+
+#[tokio::test]
+async fn test_post_triples_empty_triples_array() {
+    let (base_url, _server) = start_test_server().await;
+    let client = Client::new();
+
+    // POST with empty triples array
+    let response = client
+        .post(&format!("{}/triples", base_url))
+        .json(&json!({
+            "triples": []
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Should succeed but insert nothing
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["triple_ids"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn test_decay_factor_greater_than_one() {
+    let (base_url, _server) = start_test_server().await;
+    let client = Client::new();
+
+    // Insert a triple
+    client
+        .post(&format!("{}/triples", base_url))
+        .json(&json!({
+            "triples": [
+                {
+                    "subject": "A",
+                    "predicate": "rel",
+                    "object": "B"
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Decay with factor > 1.0 (increases weights instead of decreasing)
+    let response = client
+        .post(&format!("{}/maintenance/decay", base_url))
+        .json(&json!({
+            "factor": 2.0,
+            "min_weight": 0.0
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Check that weight increased
+    let triples_response = client
+        .get(&format!("{}/triples", base_url))
+        .send()
+        .await
+        .unwrap();
+
+    let body: serde_json::Value = triples_response.json().await.unwrap();
+    let triples = body["triples"].as_array().unwrap();
+    assert_eq!(triples[0]["weight"], 2.0);
+}
+
+#[tokio::test]
+async fn test_evict_threshold_above_one() {
+    let (base_url, _server) = start_test_server().await;
+    let client = Client::new();
+
+    // Insert some triples
+    client
+        .post(&format!("{}/triples", base_url))
+        .json(&json!({
+            "triples": [
+                {
+                    "subject": "A",
+                    "predicate": "rel",
+                    "object": "B"
+                },
+                {
+                    "subject": "C",
+                    "predicate": "rel",
+                    "object": "D"
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // Evict with threshold > 1.0 (should evict everything since initial weight is 1.0)
+    let response = client
+        .post(&format!("{}/maintenance/evict", base_url))
+        .json(&json!({
+            "threshold": 1.5
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["evicted_count"], 2);
+
+    // Verify all triples are gone
+    let stats_response = client
+        .get(&format!("{}/stats", base_url))
+        .send()
+        .await
+        .unwrap();
+
+    let stats_body: serde_json::Value = stats_response.json().await.unwrap();
+    assert_eq!(stats_body["triple_count"], 0);
+}

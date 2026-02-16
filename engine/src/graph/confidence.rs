@@ -47,7 +47,7 @@ impl DynamicConfidence {
     /// - Number of distinct sources
     /// - Average connectivity of source nodes
     pub async fn source_reliability(
-        store: &impl TripleStore,
+        store: &(impl TripleStore + ?Sized),
         _graph: &GraphView,
         triple_id: TripleId,
     ) -> Result<f64> {
@@ -110,7 +110,7 @@ impl DynamicConfidence {
     /// - Path diversity (how many paths from query context to triple)
     /// - Centrality (PageRank scores of nodes in the triple)
     pub async fn compute_confidence(
-        store: &impl TripleStore,
+        store: &(impl TripleStore + ?Sized),
         graph: &GraphView,
         triple_id: TripleId,
         query_context: Option<NodeId>,
@@ -151,7 +151,7 @@ impl DynamicConfidence {
 
     /// Compute confidence scores for multiple triples in batch.
     pub async fn compute_batch_confidence(
-        store: &impl TripleStore,
+        store: &(impl TripleStore + ?Sized),
         graph: &GraphView,
         triple_ids: &[TripleId],
         query_context: Option<NodeId>,
@@ -282,5 +282,94 @@ mod tests {
         assert_eq!(scores.len(), 2);
         assert!(scores.contains_key(&t1_id));
         assert!(scores.contains_key(&t2_id));
+    }
+
+    // === EDGE CASE TESTS ===
+
+    #[tokio::test]
+    async fn test_confidence_isolated_triple() {
+        let store = MemoryStore::new();
+        
+        // Create an isolated triple with no other connections
+        let a = store.find_or_create_node("IsolatedA").await.unwrap();
+        let b = store.find_or_create_node("IsolatedB").await.unwrap();
+        
+        let triple = Triple::new(a.id, "isolated_rel", b.id);
+        let triple_id = store.insert_triple(triple).await.unwrap();
+        
+        // No sources
+        let graph = GraphView::from_store(&store).await.unwrap();
+        
+        let confidence = DynamicConfidence::compute_confidence(&store, &graph, triple_id, None)
+            .await
+            .unwrap();
+        
+        // Should have very low confidence (no sources, no connections, low centrality)
+        assert!(confidence.combined < 0.2);
+        assert_eq!(confidence.source_reliability, 0.0); // No sources
+    }
+
+    #[tokio::test]
+    async fn test_confidence_nonexistent_triple() {
+        let store = MemoryStore::new();
+        
+        let a = store.find_or_create_node("A").await.unwrap();
+        let b = store.find_or_create_node("B").await.unwrap();
+        
+        store.insert_triple(Triple::new(a.id, "rel", b.id)).await.unwrap();
+        
+        let graph = GraphView::from_store(&store).await.unwrap();
+        
+        // Try to compute confidence for non-existent triple
+        let fake_id = uuid::Uuid::new_v4();
+        let confidence = DynamicConfidence::compute_confidence(&store, &graph, fake_id, None)
+            .await
+            .unwrap();
+        
+        // Should return all zeros
+        assert_eq!(confidence.source_reliability, 0.0);
+        assert_eq!(confidence.path_diversity, 0.0);
+        assert_eq!(confidence.centrality, 0.0);
+        assert_eq!(confidence.combined, 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_source_reliability_no_sources() {
+        let store = MemoryStore::new();
+        
+        let a = store.find_or_create_node("A").await.unwrap();
+        let b = store.find_or_create_node("B").await.unwrap();
+        
+        let triple = Triple::new(a.id, "rel", b.id);
+        let triple_id = store.insert_triple(triple).await.unwrap();
+        
+        let graph = GraphView::from_store(&store).await.unwrap();
+        
+        // No sources added
+        let reliability = DynamicConfidence::source_reliability(&store, &graph, triple_id)
+            .await
+            .unwrap();
+        
+        assert_eq!(reliability, 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_path_diversity_no_paths() {
+        let store = MemoryStore::new();
+        
+        // Create disconnected nodes
+        let query = store.find_or_create_node("Query").await.unwrap();
+        let a = store.find_or_create_node("A").await.unwrap();
+        let b = store.find_or_create_node("B").await.unwrap();
+        
+        // Triple between A and B, but no connection to Query
+        store.insert_triple(Triple::new(a.id, "rel", b.id)).await.unwrap();
+        
+        let graph = GraphView::from_store(&store).await.unwrap();
+        
+        // No paths from query to triple nodes
+        let diversity = DynamicConfidence::path_diversity(&graph, query.id, a.id, b.id);
+        
+        assert_eq!(diversity, 0.0);
     }
 }

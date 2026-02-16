@@ -42,6 +42,8 @@ pub fn create_router(engine: ValenceEngine) -> Router {
     let state = ApiState::new(engine);
 
     Router::new()
+        // Health check
+        .route("/health", get(health_check))
         // Triple operations
         .route("/triples", post(insert_triples))
         .route("/triples", get(query_triples))
@@ -57,6 +59,18 @@ pub fn create_router(engine: ValenceEngine) -> Router {
         .route("/maintenance/evict", post(trigger_evict))
         .route("/maintenance/recompute-embeddings", post(recompute_embeddings))
         .with_state(state)
+}
+
+/// GET /health — Health check endpoint
+async fn health_check(State(state): State<ApiState>) -> Result<Json<serde_json::Value>, ApiError> {
+    // Check if store is accessible by counting triples
+    let triple_count = state.engine.store.count_triples().await?;
+    
+    Ok(Json(serde_json::json!({
+        "status": "healthy",
+        "triple_count": triple_count,
+        "has_embeddings": state.engine.has_embeddings().await,
+    })))
 }
 
 /// POST /triples — Insert one or more triples with optional source

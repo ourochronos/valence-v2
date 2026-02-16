@@ -2,6 +2,8 @@
 use anyhow::{Context, Result};
 #[cfg(feature = "postgres")]
 use sqlx::{PgPool, Row};
+#[cfg(feature = "postgres")]
+use async_trait::async_trait;
 
 #[cfg(feature = "postgres")]
 use crate::models::{Triple, TripleId, Node, NodeId, Source, SourceId, Predicate, SourceType};
@@ -85,6 +87,7 @@ impl PgStore {
 }
 
 #[cfg(feature = "postgres")]
+#[async_trait]
 impl TripleStore for PgStore {
     async fn insert_node(&self, node: Node) -> Result<NodeId> {
         sqlx::query(

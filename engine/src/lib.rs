@@ -4,6 +4,7 @@
 //! Inference (LLM) exists only at the boundary: decomposing natural language to triples
 //! on write, recomposing triples to natural language on read.
 
+pub mod error;       // Error types
 pub mod models;
 pub mod storage;
 pub mod graph;       // In-memory graph algorithms (petgraph)
@@ -12,6 +13,7 @@ pub mod embeddings;  // Topology-derived embeddings
 pub mod engine;      // Unified engine: storage + embeddings + lifecycle
 // pub mod query;       // Hybrid retrieval (vector + graph)
 
+pub use error::{ValenceError, Result};
 pub use models::{Triple, Node, Source};
 pub use storage::TripleStore;
 pub use graph::{GraphView, ConfidenceScore};

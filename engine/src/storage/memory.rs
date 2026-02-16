@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use anyhow::Result;
+use async_trait::async_trait;
 
 use crate::models::{Triple, TripleId, Node, NodeId, Source, SourceId};
 use super::traits::{TripleStore, TriplePattern};
 
 /// In-memory implementation of TripleStore using HashMaps.
-/// Fast, simple, but ephemeral - data is lost on restart.
+///
+/// Fast, simple, but ephemeral - data is lost on restart. Uses RwLocks for concurrent access.
+/// Suitable for testing, prototyping, or small-scale deployments.
 #[derive(Clone)]
 pub struct MemoryStore {
     nodes: Arc<RwLock<HashMap<NodeId, Node>>>,
@@ -19,6 +22,7 @@ pub struct MemoryStore {
 }
 
 impl MemoryStore {
+    /// Create a new empty MemoryStore.
     pub fn new() -> Self {
         Self {
             nodes: Arc::new(RwLock::new(HashMap::new())),
@@ -36,6 +40,7 @@ impl Default for MemoryStore {
     }
 }
 
+#[async_trait]
 impl TripleStore for MemoryStore {
     async fn insert_node(&self, node: Node) -> Result<NodeId> {
         let id = node.id;
@@ -64,7 +69,7 @@ impl TripleStore for MemoryStore {
         if let Some(node) = self.find_node_by_value(value).await? {
             Ok(node)
         } else {
-            let node = Node::new(value);
+            let node = Node::new(value.to_string());
             self.insert_node(node.clone()).await?;
             Ok(node)
         }
@@ -101,9 +106,9 @@ impl TripleStore for MemoryStore {
                     }
                 }
                 true
-            })
-            .cloned()
-            .collect();
+                })
+                .cloned()
+                .collect();
         Ok(results)
     }
 
@@ -414,5 +419,194 @@ mod tests {
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].source_type, SourceType::UserInput);
         assert_eq!(sources[0].reference.as_deref(), Some("user-123"));
+    }
+
+    // === EDGE CASE TESTS ===
+
+    #[tokio::test]
+    async fn test_query_all_wildcard() {
+        let store = MemoryStore::new();
+        
+        let a = store.find_or_create_node("A").await.unwrap();
+        let b = store.find_or_create_node("B").await.unwrap();
+        let c = store.find_or_create_node("C").await.unwrap();
+        
+        store.insert_triple(Triple::new(a.id, "rel1", b.id)).await.unwrap();
+        store.insert_triple(Triple::new(b.id, "rel2", c.id)).await.unwrap();
+        store.insert_triple(Triple::new(c.id, "rel3", a.id)).await.unwrap();
+        
+        // Query with all wildcards should return all triples
+        let pattern = TriplePattern {
+            subject: None,
+            predicate: None,
+            object: None,
+        };
+        let results = store.query_triples(pattern).await.unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_insert_duplicate_triple() {
+        let store = MemoryStore::new();
+        
+        let a = store.find_or_create_node("A").await.unwrap();
+        let b = store.find_or_create_node("B").await.unwrap();
+        
+        // Insert same triple twice (different IDs since Triple::new generates new UUIDs)
+        let triple1 = Triple::new(a.id, "knows", b.id);
+        let triple2 = Triple::new(a.id, "knows", b.id);
+        
+        let id1 = store.insert_triple(triple1).await.unwrap();
+        let id2 = store.insert_triple(triple2).await.unwrap();
+        
+        // Both should be stored (different IDs)
+        assert_ne!(id1, id2);
+        assert_eq!(store.count_triples().await.unwrap(), 2);
+        
+        // Query should return both
+        let pattern = TriplePattern {
+            subject: Some(a.id),
+            predicate: Some("knows".to_string()),
+            object: Some(b.id),
+        };
+        let results = store.query_triples(pattern).await.unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_delete_nonexistent_triple() {
+        let store = MemoryStore::new();
+        
+        // Try to delete a triple that doesn't exist (should not error)
+        let fake_id = uuid::Uuid::new_v4();
+        let result = store.delete_triple(fake_id).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_get_nonexistent_node() {
+        let store = MemoryStore::new();
+        
+        // Try to get a node that doesn't exist
+        let fake_id = uuid::Uuid::new_v4();
+        let result = store.get_node(fake_id).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_decay_with_factor_greater_than_one() {
+        let store = MemoryStore::new();
+        
+        let a = store.find_or_create_node("A").await.unwrap();
+        let b = store.find_or_create_node("B").await.unwrap();
+        
+        let triple = Triple::new(a.id, "rel", b.id);
+        store.insert_triple(triple.clone()).await.unwrap();
+        
+        // Decay with factor > 1.0 (weights will increase, which might not be desired)
+        store.decay(1.5, 0.0).await.unwrap();
+        
+        let t = store.get_triple(triple.id).await.unwrap().unwrap();
+        assert_eq!(t.weight, 1.5);
+    }
+
+    #[tokio::test]
+    async fn test_evict_with_threshold_zero() {
+        let store = MemoryStore::new();
+        
+        let a = store.find_or_create_node("A").await.unwrap();
+        let b = store.find_or_create_node("B").await.unwrap();
+        
+        let triple = Triple::new(a.id, "rel", b.id);
+        store.insert_triple(triple).await.unwrap();
+        
+        // Decay to very small weight
+        store.decay(0.001, 0.0).await.unwrap();
+        
+        // Evict with threshold 0.0 should evict nothing (weights are >= 0.0)
+        let evicted = store.evict_below_weight(0.0).await.unwrap();
+        assert_eq!(evicted, 0);
+        assert_eq!(store.count_triples().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_evict_with_threshold_above_one() {
+        let store = MemoryStore::new();
+        
+        let a = store.find_or_create_node("A").await.unwrap();
+        let b = store.find_or_create_node("B").await.unwrap();
+        
+        let triple = Triple::new(a.id, "rel", b.id);
+        store.insert_triple(triple).await.unwrap();
+        
+        // Evict with threshold > 1.0 should evict everything (initial weight is 1.0)
+        let evicted = store.evict_below_weight(1.1).await.unwrap();
+        assert_eq!(evicted, 1);
+        assert_eq!(store.count_triples().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_large_batch_insert() {
+        let store = MemoryStore::new();
+        
+        let a = store.find_or_create_node("A").await.unwrap();
+        
+        // Insert 1000+ triples
+        let mut triple_ids = Vec::new();
+        for i in 0..1500 {
+            let node = store.find_or_create_node(&format!("Node_{}", i)).await.unwrap();
+            let triple = Triple::new(a.id, "connects_to", node.id);
+            let id = store.insert_triple(triple).await.unwrap();
+            triple_ids.push(id);
+        }
+        
+        // Verify count
+        assert_eq!(store.count_triples().await.unwrap(), 1500);
+        
+        // Verify we can query them
+        let pattern = TriplePattern {
+            subject: Some(a.id),
+            predicate: None,
+            object: None,
+        };
+        let results = store.query_triples(pattern).await.unwrap();
+        assert_eq!(results.len(), 1500);
+        
+        // Verify we can retrieve each triple
+        for id in triple_ids.iter().take(10) {
+            let triple = store.get_triple(*id).await.unwrap();
+            assert!(triple.is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_neighbors_depth_zero() {
+        let store = MemoryStore::new();
+        
+        let a = store.find_or_create_node("A").await.unwrap();
+        let b = store.find_or_create_node("B").await.unwrap();
+        
+        store.insert_triple(Triple::new(a.id, "knows", b.id)).await.unwrap();
+        
+        // Depth 0 should return empty
+        let neighbors = store.neighbors(a.id, 0).await.unwrap();
+        assert_eq!(neighbors.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_find_or_create_node_idempotency() {
+        let store = MemoryStore::new();
+        
+        // Call find_or_create multiple times with same value
+        let node1 = store.find_or_create_node("test_value").await.unwrap();
+        let node2 = store.find_or_create_node("test_value").await.unwrap();
+        let node3 = store.find_or_create_node("test_value").await.unwrap();
+        
+        // All should return the same node ID
+        assert_eq!(node1.id, node2.id);
+        assert_eq!(node2.id, node3.id);
+        
+        // Should only have created one node
+        assert_eq!(store.count_nodes().await.unwrap(), 1);
     }
 }

@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: valence-postgres
+    environment:
+      POSTGRES_DB: valence
+      POSTGRES_USER: valence
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-valence_dev_password}
+    ports:
+      - "5433:5432"
+    volumes:
+      - valence-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U valence"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - valence-network
+
+  valence-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: valence-engine
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://valence:valence_dev_password@postgres:5432/valence}
+      VALENCE_HOST: ${VALENCE_HOST:-0.0.0.0}
+      VALENCE_PORT: ${VALENCE_PORT:-8421}
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "8421:8421"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8421/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - valence-network
+
+volumes:
+  valence-postgres-data:
+    driver: local
+
+networks:
+  valence-network:
+    driver: bridge

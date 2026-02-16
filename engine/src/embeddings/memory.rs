@@ -281,4 +281,109 @@ mod tests {
         let sim = cosine_similarity(&[0.0, 0.0, 0.0], &[1.0, 0.0, 0.0]);
         assert_eq!(sim, 0.0);
     }
+
+    // === EDGE CASE TESTS ===
+
+    #[test]
+    fn test_query_nearest_empty_store() {
+        let store = MemoryEmbeddingStore::new();
+        
+        // Query on empty store should return empty results
+        let query = vec![1.0, 0.0, 0.0];
+        let results = store.query_nearest(&query, 5).unwrap();
+        
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn test_query_nearest_k_greater_than_store_size() {
+        let mut store = MemoryEmbeddingStore::new();
+        
+        // Add only 2 embeddings
+        let node1 = uuid::Uuid::new_v4();
+        let node2 = uuid::Uuid::new_v4();
+        
+        store.store(node1, vec![1.0, 0.0, 0.0]).unwrap();
+        store.store(node2, vec![0.0, 1.0, 0.0]).unwrap();
+        
+        // Request k=10 (more than available)
+        let query = vec![1.0, 0.0, 0.0];
+        let results = store.query_nearest(&query, 10).unwrap();
+        
+        // Should return only 2 results (all available)
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_query_nearest_dimension_mismatch() {
+        let mut store = MemoryEmbeddingStore::new();
+        
+        let node1 = uuid::Uuid::new_v4();
+        store.store(node1, vec![1.0, 2.0, 3.0]).unwrap();
+        
+        // Query with different dimensions
+        let query = vec![1.0, 0.0]; // 2D instead of 3D
+        let result = store.query_nearest(&query, 5);
+        
+        // Should error on dimension mismatch
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_store_dimension_mismatch() {
+        let mut store = MemoryEmbeddingStore::new();
+        
+        let node1 = uuid::Uuid::new_v4();
+        let node2 = uuid::Uuid::new_v4();
+        
+        // First embedding sets dimensionality to 3
+        store.store(node1, vec![1.0, 2.0, 3.0]).unwrap();
+        
+        // Second embedding with different dimension should fail
+        let result = store.store(node2, vec![1.0, 2.0]);
+        assert!(result.is_err());
+        
+        // Should still only have 1 embedding
+        assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn test_query_nearest_k_zero() {
+        let mut store = MemoryEmbeddingStore::new();
+        
+        let node1 = uuid::Uuid::new_v4();
+        store.store(node1, vec![1.0, 0.0, 0.0]).unwrap();
+        
+        // Request k=0
+        let query = vec![1.0, 0.0, 0.0];
+        let results = store.query_nearest(&query, 0).unwrap();
+        
+        // Should return empty (truncated to 0)
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn test_get_nonexistent_node() {
+        let store = MemoryEmbeddingStore::new();
+        
+        let fake_id = uuid::Uuid::new_v4();
+        let result = store.get(fake_id);
+        
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_all_embeddings_empty() {
+        let store = MemoryEmbeddingStore::new();
+        
+        let all = store.all_embeddings();
+        assert_eq!(all.len(), 0);
+    }
+
+    #[test]
+    fn test_cosine_similarity_different_lengths() {
+        // Different length vectors should return 0.0
+        let sim = cosine_similarity(&[1.0, 0.0], &[1.0, 0.0, 0.0]);
+        assert_eq!(sim, 0.0);
+    }
 }

@@ -38,7 +38,7 @@ impl GraphView {
     }
 
     /// Load the full graph from a TripleStore
-    pub async fn from_store(store: &impl TripleStore) -> Result<Self> {
+    pub async fn from_store(store: &(impl TripleStore + ?Sized)) -> Result<Self> {
         let mut view = Self::new();
         
         // Query all triples (empty pattern = wildcard)
@@ -55,7 +55,7 @@ impl GraphView {
 
     /// Load a neighborhood subgraph around a node up to a given depth
     pub async fn from_neighborhood(
-        store: &impl TripleStore,
+        store: &(impl TripleStore + ?Sized),
         node_id: NodeId,
         depth: u32,
     ) -> Result<Self> {

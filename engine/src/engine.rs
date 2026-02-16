@@ -13,8 +13,8 @@ use crate::{
 /// providing unified lifecycle management.
 #[derive(Clone)]
 pub struct ValenceEngine {
-    /// The triple store
-    pub store: Arc<MemoryStore>,
+    /// The triple store (trait object for flexibility)
+    pub store: Arc<dyn TripleStore>,
     /// The embedding store (wrapped in RwLock for interior mutability)
     pub embeddings: Arc<RwLock<MemoryEmbeddingStore>>,
 }
@@ -30,6 +30,14 @@ impl ValenceEngine {
 
     /// Create a ValenceEngine from an existing MemoryStore
     pub fn from_store(store: MemoryStore) -> Self {
+        Self {
+            store: Arc::new(store),
+            embeddings: Arc::new(RwLock::new(MemoryEmbeddingStore::new())),
+        }
+    }
+
+    /// Create a ValenceEngine from any TripleStore implementation
+    pub fn from_triple_store<S: TripleStore + 'static>(store: S) -> Self {
         Self {
             store: Arc::new(store),
             embeddings: Arc::new(RwLock::new(MemoryEmbeddingStore::new())),

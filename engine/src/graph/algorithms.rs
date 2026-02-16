@@ -396,4 +396,136 @@ mod tests {
         assert!(cent_b > cent_a);
         assert!(cent_b > cent_c);
     }
+
+    // === EDGE CASE TESTS ===
+
+    #[tokio::test]
+    async fn test_pagerank_empty_graph() {
+        let store = MemoryStore::new();
+        let graph = GraphView::from_store(&store).await.unwrap();
+        
+        let ranks = pagerank(&graph, 0.85, 10);
+        
+        // Empty graph should return empty results
+        assert_eq!(ranks.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_pagerank_single_node() {
+        let store = MemoryStore::new();
+        
+        // Single isolated node (no edges) — won't appear in graph since
+        // GraphView only includes nodes that participate in triples
+        let _a = store.find_or_create_node("A").await.unwrap();
+        
+        let graph = GraphView::from_store(&store).await.unwrap();
+        let ranks = pagerank(&graph, 0.85, 10);
+        
+        // No triples means no nodes in graph view
+        assert_eq!(ranks.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_connected_components_empty_graph() {
+        let store = MemoryStore::new();
+        let graph = GraphView::from_store(&store).await.unwrap();
+        
+        let components = connected_components(&graph);
+        
+        // Empty graph should have no components
+        assert_eq!(components.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_shortest_path_no_path_exists() {
+        let store = MemoryStore::new();
+        
+        // Create two disconnected nodes: A and B (no edge between them)
+        let a = store.find_or_create_node("A").await.unwrap();
+        let b = store.find_or_create_node("B").await.unwrap();
+        let c = store.find_or_create_node("C").await.unwrap();
+        
+        // Only edge is C -> A
+        store.insert_triple(Triple::new(c.id, "links", a.id)).await.unwrap();
+        
+        let graph = GraphView::from_store(&store).await.unwrap();
+        
+        // No path from A to B
+        let path = shortest_path(&graph, a.id, b.id);
+        assert!(path.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_shortest_path_nonexistent_nodes() {
+        let store = MemoryStore::new();
+        
+        let a = store.find_or_create_node("A").await.unwrap();
+        let b = store.find_or_create_node("B").await.unwrap();
+        
+        store.insert_triple(Triple::new(a.id, "links", b.id)).await.unwrap();
+        
+        let graph = GraphView::from_store(&store).await.unwrap();
+        
+        // Try with non-existent node
+        let fake_id = uuid::Uuid::new_v4();
+        let path = shortest_path(&graph, a.id, fake_id);
+        assert!(path.is_none());
+        
+        let path = shortest_path(&graph, fake_id, b.id);
+        assert!(path.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_betweenness_centrality_single_node() {
+        let store = MemoryStore::new();
+        
+        // Single isolated node — not in graph (no triples)
+        let _a = store.find_or_create_node("A").await.unwrap();
+        
+        let graph = GraphView::from_store(&store).await.unwrap();
+        let centrality = betweenness_centrality(&graph);
+        
+        // No triples means no nodes in graph view
+        assert_eq!(centrality.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_betweenness_centrality_empty_graph() {
+        let store = MemoryStore::new();
+        let graph = GraphView::from_store(&store).await.unwrap();
+        
+        let centrality = betweenness_centrality(&graph);
+        
+        // Empty graph should return empty results
+        assert_eq!(centrality.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_count_distinct_paths_no_path() {
+        let store = MemoryStore::new();
+        
+        // Two disconnected nodes
+        let a = store.find_or_create_node("A").await.unwrap();
+        let b = store.find_or_create_node("B").await.unwrap();
+        
+        let graph = GraphView::from_store(&store).await.unwrap();
+        
+        // No paths between disconnected nodes
+        let count = count_distinct_paths(&graph, a.id, b.id, 10);
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_count_distinct_paths_nonexistent_node() {
+        let store = MemoryStore::new();
+        
+        let a = store.find_or_create_node("A").await.unwrap();
+        let fake_id = uuid::Uuid::new_v4();
+        
+        let graph = GraphView::from_store(&store).await.unwrap();
+        
+        // Non-existent node should return 0 paths
+        let count = count_distinct_paths(&graph, a.id, fake_id, 10);
+        assert_eq!(count, 0);
+    }
 }

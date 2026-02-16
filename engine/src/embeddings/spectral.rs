@@ -52,7 +52,7 @@ impl SpectralConfig {
 
 /// Compute spectral embeddings from any TripleStore
 pub async fn compute_embeddings(
-    store: &impl TripleStore,
+    store: &(impl TripleStore + ?Sized),
     dimensions: usize,
 ) -> Result<HashMap<NodeId, Vec<f32>>> {
     let config = SpectralConfig::new(dimensions);
@@ -61,7 +61,7 @@ pub async fn compute_embeddings(
 
 /// Compute spectral embeddings with custom configuration
 pub async fn compute_embeddings_with_config(
-    store: &impl TripleStore,
+    store: &(impl TripleStore + ?Sized),
     config: SpectralConfig,
 ) -> Result<HashMap<NodeId, Vec<f32>>> {
     // Build graph view from store
@@ -342,6 +342,102 @@ mod tests {
             0.0
         } else {
             dot / (mag_a * mag_b)
+        }
+    }
+
+    // === EDGE CASE TESTS ===
+
+    #[tokio::test]
+    async fn test_spectral_embeddings_fewer_nodes_than_dimensions() {
+        let store = MemoryStore::new();
+        
+        // Create only 2 nodes with one edge
+        let a = store.find_or_create_node("A").await.unwrap();
+        let b = store.find_or_create_node("B").await.unwrap();
+        
+        store.insert_triple(Triple::new(a.id, "connects", b.id)).await.unwrap();
+        
+        // Request 64 dimensions but only have 2 nodes
+        // Should return min(dimensions, node_count - 1) = min(64, 1) = 1
+        let embeddings = compute_embeddings(&store, 64).await.unwrap();
+        
+        // Should have 2 nodes
+        assert_eq!(embeddings.len(), 2);
+        
+        // Each embedding should have 1 dimension (node_count - 1)
+        for embedding in embeddings.values() {
+            assert_eq!(embedding.len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_spectral_embeddings_disconnected_graph() {
+        let store = MemoryStore::new();
+        
+        // Create two disconnected components
+        let a = store.find_or_create_node("A").await.unwrap();
+        let b = store.find_or_create_node("B").await.unwrap();
+        let c = store.find_or_create_node("C").await.unwrap();
+        let d = store.find_or_create_node("D").await.unwrap();
+        
+        // Component 1: A <-> B
+        store.insert_triple(Triple::new(a.id, "connects", b.id)).await.unwrap();
+        store.insert_triple(Triple::new(b.id, "connects", a.id)).await.unwrap();
+        
+        // Component 2: C <-> D
+        store.insert_triple(Triple::new(c.id, "connects", d.id)).await.unwrap();
+        store.insert_triple(Triple::new(d.id, "connects", c.id)).await.unwrap();
+        
+        // Compute embeddings
+        let embeddings = compute_embeddings(&store, 3).await.unwrap();
+        
+        // Should have 4 nodes
+        assert_eq!(embeddings.len(), 4);
+        
+        // Each embedding should have 3 dimensions
+        for embedding in embeddings.values() {
+            assert_eq!(embedding.len(), 3);
+        }
+        
+        // Nodes in the same component should be more similar
+        let emb_a = embeddings.get(&a.id).unwrap();
+        let emb_b = embeddings.get(&b.id).unwrap();
+        let emb_c = embeddings.get(&c.id).unwrap();
+        let emb_d = embeddings.get(&d.id).unwrap();
+        
+        let sim_ab = cosine_similarity(emb_a, emb_b);
+        let sim_ac = cosine_similarity(emb_a, emb_c);
+        let sim_cd = cosine_similarity(emb_c, emb_d);
+        
+        // A-B should be similar (same component)
+        // C-D should be similar (same component)
+        // A-C should be less similar (different components)
+        assert!(sim_ab.abs() > 0.1 || sim_cd.abs() > 0.1, 
+            "Within-component similarity should be non-zero");
+        
+        // Check that cross-component similarity is lower
+        assert!(sim_ac.abs() < sim_ab.abs().max(sim_cd.abs()), 
+            "Cross-component similarity should be lower than within-component");
+    }
+
+    #[tokio::test]
+    async fn test_spectral_embeddings_three_nodes() {
+        let store = MemoryStore::new();
+        
+        // Create minimal graph with 3 nodes (edge case for eigenvector computation)
+        let a = store.find_or_create_node("A").await.unwrap();
+        let b = store.find_or_create_node("B").await.unwrap();
+        let c = store.find_or_create_node("C").await.unwrap();
+        
+        store.insert_triple(Triple::new(a.id, "connects", b.id)).await.unwrap();
+        store.insert_triple(Triple::new(b.id, "connects", c.id)).await.unwrap();
+        
+        // Request 2 dimensions (should work with 3 nodes: max is node_count - 1 = 2)
+        let embeddings = compute_embeddings(&store, 2).await.unwrap();
+        
+        assert_eq!(embeddings.len(), 3);
+        for embedding in embeddings.values() {
+            assert_eq!(embedding.len(), 2);
         }
     }
 }
