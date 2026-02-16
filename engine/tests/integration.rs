@@ -6,7 +6,7 @@ use reqwest::{Client, StatusCode};
 use serde_json::json;
 use std::net::TcpListener;
 use tokio::task::JoinHandle;
-use valence_engine::{api::create_router, storage::MemoryStore};
+use valence_engine::{api::create_router, engine::ValenceEngine};
 
 /// Helper to find a random available port
 fn get_available_port() -> u16 {
@@ -20,8 +20,8 @@ fn get_available_port() -> u16 {
 /// Helper to start the server on a random port and return the base URL and server handle
 async fn start_test_server() -> (String, JoinHandle<()>) {
     let port = get_available_port();
-    let store = MemoryStore::new();
-    let app = create_router(store);
+    let engine = ValenceEngine::new();
+    let app = create_router(engine);
     let addr = format!("127.0.0.1:{}", port);
     let base_url = format!("http://{}", addr);
 
