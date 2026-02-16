@@ -8,10 +8,11 @@ use crate::{
     storage::{MemoryStore, TripleStore},
     embeddings::{EmbeddingStore, memory::MemoryEmbeddingStore, spectral, node2vec},
     stigmergy::AccessTracker,
+    lifecycle::{LifecycleManager, DecayPolicy, MemoryBounds},
 };
 
-/// ValenceEngine ties together the triple store, embedding store, and access tracker,
-/// providing unified lifecycle management.
+/// ValenceEngine ties together the triple store, embedding store, access tracker,
+/// and lifecycle manager, providing unified knowledge management.
 #[derive(Clone)]
 pub struct ValenceEngine {
     /// The triple store (trait object for flexibility)
@@ -20,15 +21,32 @@ pub struct ValenceEngine {
     pub embeddings: Arc<RwLock<MemoryEmbeddingStore>>,
     /// The access tracker for stigmergy
     pub access_tracker: Arc<AccessTracker>,
+    /// The lifecycle manager for decay and bounds
+    pub lifecycle: Arc<LifecycleManager>,
+    /// Memory bounds configuration
+    pub bounds: Arc<MemoryBounds>,
 }
 
 impl ValenceEngine {
-    /// Create a new ValenceEngine with empty stores
+    /// Create a new ValenceEngine with empty stores and default lifecycle settings
     pub fn new() -> Self {
         Self {
             store: Arc::new(MemoryStore::new()),
             embeddings: Arc::new(RwLock::new(MemoryEmbeddingStore::new())),
             access_tracker: Arc::new(AccessTracker::new()),
+            lifecycle: Arc::new(LifecycleManager::with_defaults()),
+            bounds: Arc::new(MemoryBounds::default()),
+        }
+    }
+    
+    /// Create a new ValenceEngine with custom lifecycle policy and bounds
+    pub fn with_lifecycle(policy: DecayPolicy, bounds: MemoryBounds) -> Self {
+        Self {
+            store: Arc::new(MemoryStore::new()),
+            embeddings: Arc::new(RwLock::new(MemoryEmbeddingStore::new())),
+            access_tracker: Arc::new(AccessTracker::new()),
+            lifecycle: Arc::new(LifecycleManager::new(policy)),
+            bounds: Arc::new(bounds),
         }
     }
 
@@ -38,6 +56,8 @@ impl ValenceEngine {
             store: Arc::new(store),
             embeddings: Arc::new(RwLock::new(MemoryEmbeddingStore::new())),
             access_tracker: Arc::new(AccessTracker::new()),
+            lifecycle: Arc::new(LifecycleManager::with_defaults()),
+            bounds: Arc::new(MemoryBounds::default()),
         }
     }
 
@@ -47,6 +67,8 @@ impl ValenceEngine {
             store: Arc::new(store),
             embeddings: Arc::new(RwLock::new(MemoryEmbeddingStore::new())),
             access_tracker: Arc::new(AccessTracker::new()),
+            lifecycle: Arc::new(LifecycleManager::with_defaults()),
+            bounds: Arc::new(MemoryBounds::default()),
         }
     }
 
@@ -157,6 +179,27 @@ impl ValenceEngine {
         );
 
         engine.run_maintenance_cycle().await
+    }
+    
+    /// Run a full lifecycle cycle: structural decay + eviction.
+    ///
+    /// This applies decay considering structural properties (sources, centrality),
+    /// then enforces memory bounds by evicting lowest-weight triples.
+    ///
+    /// Returns (decay_result, enforce_result).
+    pub async fn run_lifecycle_cycle(&self) -> Result<(crate::lifecycle::DecayCycleResult, crate::lifecycle::EnforceResult)> {
+        // Run structural decay
+        let decay_result = self.lifecycle.decay_cycle(self).await?;
+        
+        // Enforce memory bounds
+        let enforce_result = self.bounds.enforce(&*self.store).await?;
+        
+        Ok((decay_result, enforce_result))
+    }
+    
+    /// Check lifecycle status (bounds and utilization).
+    pub async fn lifecycle_status(&self) -> Result<crate::lifecycle::BoundsStatus> {
+        self.bounds.check(&*self.store).await
     }
 }
 

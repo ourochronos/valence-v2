@@ -11,6 +11,8 @@ use crate::{
     embeddings::EmbeddingStore,
     models::{NodeId, TripleId},
     storage::TripleStore,
+    query::{FusionConfig, FusionScorer, RetrievalSignals},
+    graph::DynamicConfidence,
 };
 
 use super::working_set::WorkingSet;
@@ -39,6 +41,9 @@ pub struct AssemblyConfig {
     pub include_sources: bool,
     /// Output format
     pub format: ContextFormat,
+    /// Fusion scoring configuration (optional, uses default if not specified)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fusion_config: Option<FusionConfig>,
 }
 
 impl Default for AssemblyConfig {
@@ -49,6 +54,7 @@ impl Default for AssemblyConfig {
             include_confidence: true,
             include_sources: false,
             format: ContextFormat::Markdown,
+            fusion_config: None, // Will use FusionConfig::default() when needed
         }
     }
 }
@@ -105,11 +111,13 @@ impl<'a> ContextAssembler<'a> {
         Self { engine }
     }
 
-    /// Assemble context for a query
+    /// Assemble context for a query (with graceful degradation)
     ///
     /// Process:
-    /// 1. Build working set from query
-    /// 2. Score triples by relevance (embedding similarity × confidence)
+    /// 1. Build working set from query (falls back to graph-only if no embeddings)
+    /// 2. Score triples by relevance:
+    ///    - Warm mode: embedding similarity × confidence
+    ///    - Cold mode: graph distance × confidence
     /// 3. Sort by score, take top N (token budget)
     /// 4. Format as structured text
     ///
@@ -122,7 +130,7 @@ impl<'a> ContextAssembler<'a> {
     ///
     /// An AssembledContext ready for LLM consumption
     pub async fn assemble(&self, query: &str, config: AssemblyConfig) -> Result<AssembledContext> {
-        // Step 1: Build working set from query
+        // Step 1: Build working set from query (with fallback)
         let k = config.max_nodes.min(100); // Cap at 100 for performance
         let working_set = WorkingSet::from_query(self.engine, query, k).await?;
 
@@ -134,60 +142,105 @@ impl<'a> ContextAssembler<'a> {
             .context("Query node not found")?;
 
         let embeddings_store = self.engine.embeddings.read().await;
-        let query_embedding = embeddings_store
-            .get(query_node.id)
-            .context("No embedding found for query node")?;
+        let query_embedding = embeddings_store.get(query_node.id);
 
         let mut scored_triples = Vec::new();
 
-        for (triple_id, (triple, confidence)) in &working_set.triples {
-            // Calculate relevance score: embedding similarity × confidence
-            
-            // Get embeddings for subject and object
-            let subject_emb = embeddings_store.get(triple.subject);
-            let object_emb = embeddings_store.get(triple.object);
+        if let Some(query_emb) = query_embedding {
+            // Warm mode: use embedding similarity
+            for (triple_id, (triple, confidence)) in &working_set.triples {
+                // Get embeddings for subject and object
+                let subject_emb = embeddings_store.get(triple.subject);
+                let object_emb = embeddings_store.get(triple.object);
 
-            // Compute average similarity to query
-            let mut total_similarity = 0.0;
-            let mut count = 0;
+                // Compute average similarity to query
+                let mut total_similarity = 0.0;
+                let mut count = 0;
 
-            if let Some(emb) = subject_emb {
-                total_similarity += cosine_similarity(query_embedding, emb);
-                count += 1;
-            }
+                if let Some(emb) = subject_emb {
+                    total_similarity += cosine_similarity(query_emb, emb);
+                    count += 1;
+                }
 
-            if let Some(emb) = object_emb {
-                total_similarity += cosine_similarity(query_embedding, emb);
-                count += 1;
-            }
+                if let Some(emb) = object_emb {
+                    total_similarity += cosine_similarity(query_emb, emb);
+                    count += 1;
+                }
 
-            let avg_similarity = if count > 0 {
-                total_similarity / count as f32
-            } else {
-                0.0
-            };
-
-            // Combine similarity and confidence
-            let score = (avg_similarity as f64) * confidence;
-
-            // Get node values for formatting
-            let subject_node = self.engine.store.get_node(triple.subject).await?
-                .context("Subject node not found")?;
-            let object_node = self.engine.store.get_node(triple.object).await?
-                .context("Object node not found")?;
-
-            scored_triples.push(ScoredTriple {
-                triple_id: *triple_id,
-                subject: subject_node.value,
-                predicate: triple.predicate.value.clone(),
-                object: object_node.value,
-                score,
-                confidence: if config.include_confidence {
-                    Some(*confidence)
+                let avg_similarity = if count > 0 {
+                    total_similarity / count as f32
                 } else {
-                    None
-                },
-            });
+                    0.0
+                };
+
+                // Combine similarity and confidence
+                let score = (avg_similarity as f64) * confidence;
+
+                // Get node values for formatting
+                let subject_node = self.engine.store.get_node(triple.subject).await?
+                    .context("Subject node not found")?;
+                let object_node = self.engine.store.get_node(triple.object).await?
+                    .context("Object node not found")?;
+
+                scored_triples.push(ScoredTriple {
+                    triple_id: *triple_id,
+                    subject: subject_node.value,
+                    predicate: triple.predicate.value.clone(),
+                    object: object_node.value,
+                    score,
+                    confidence: if config.include_confidence {
+                        Some(*confidence)
+                    } else {
+                        None
+                    },
+                });
+            }
+        } else {
+            // Cold mode: fall back to graph distance scoring
+            tracing::warn!(
+                "No embedding found for query node '{}', using graph-distance scoring",
+                query
+            );
+
+            // Score by graph proximity: triples involving query node get highest score,
+            // 1-hop neighbors get medium score, 2-hop get lower score
+            for (triple_id, (triple, confidence)) in &working_set.triples {
+                // Calculate graph distance from query node
+                let involves_query = triple.subject == query_node.id || triple.object == query_node.id;
+                
+                // Score based on proximity:
+                // - Direct involvement: 1.0 × confidence
+                // - 1-hop: 0.5 × confidence
+                // - 2-hop or more: 0.25 × confidence
+                let proximity_score = if involves_query {
+                    1.0
+                } else if working_set.contains_node(triple.subject) || working_set.contains_node(triple.object) {
+                    0.5
+                } else {
+                    0.25
+                };
+
+                let score = proximity_score * confidence;
+
+                // Get node values for formatting
+                let subject_node = self.engine.store.get_node(triple.subject).await?
+                    .context("Subject node not found")?;
+                let object_node = self.engine.store.get_node(triple.object).await?
+                    .context("Object node not found")?;
+
+                scored_triples.push(ScoredTriple {
+                    triple_id: *triple_id,
+                    subject: subject_node.value,
+                    predicate: triple.predicate.value.clone(),
+                    object: object_node.value,
+                    score,
+                    confidence: if config.include_confidence {
+                        Some(*confidence)
+                    } else {
+                        None
+                    },
+                });
+            }
         }
 
         drop(embeddings_store); // Release lock
@@ -409,16 +462,52 @@ mod tests {
     async fn test_assemble_empty_graph() {
         let engine = ValenceEngine::new();
         
-        // Create a single isolated node — no embeddings possible
+        // Create a single isolated node — no embeddings
         let _lonely = engine.store.find_or_create_node("lonely").await.unwrap();
-        let _ = engine.recompute_embeddings(4).await;
 
         let assembler = ContextAssembler::new(&engine);
         let config = AssemblyConfig::default();
 
-        // Should error since no embeddings exist for isolated node
+        // Should succeed with graph-based fallback (cold mode)
         let result = assembler.assemble("lonely", config).await;
-        assert!(result.is_err());
+        assert!(result.is_ok());
+        
+        let context = result.unwrap();
+        // Should have at least the query node
+        assert_eq!(context.nodes.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_assemble_cold_mode() {
+        let engine = ValenceEngine::new();
+
+        // Build a small knowledge graph WITHOUT embeddings
+        let alice = engine.store.find_or_create_node("Alice").await.unwrap();
+        let bob = engine.store.find_or_create_node("Bob").await.unwrap();
+        let carol = engine.store.find_or_create_node("Carol").await.unwrap();
+
+        engine.store.insert_triple(Triple::new(alice.id, "knows", bob.id)).await.unwrap();
+        engine.store.insert_triple(Triple::new(bob.id, "knows", carol.id)).await.unwrap();
+        engine.store.insert_triple(Triple::new(alice.id, "likes", carol.id)).await.unwrap();
+
+        // DO NOT compute embeddings — test cold mode
+        // Assemble context in cold mode
+        let assembler = ContextAssembler::new(&engine);
+        let config = AssemblyConfig {
+            max_triples: 10,
+            max_nodes: 10,
+            include_confidence: true,
+            include_sources: false,
+            format: ContextFormat::Markdown,
+            fusion_config: None,
+        };
+
+        let context = assembler.assemble("Alice", config).await.unwrap();
+
+        // Should have found relevant triples via graph traversal
+        assert!(context.triples.len() > 0);
+        assert!(context.nodes.len() > 0);
+        assert!(!context.formatted.is_empty());
     }
 
     #[tokio::test]
@@ -445,6 +534,7 @@ mod tests {
             include_confidence: true,
             include_sources: false,
             format: ContextFormat::Markdown,
+            fusion_config: None,
         };
 
         let context = assembler.assemble("Alice", config).await.unwrap();
@@ -476,6 +566,7 @@ mod tests {
             include_confidence: false,
             include_sources: false,
             format: ContextFormat::Plain,
+            fusion_config: None,
         };
 
         let context = assembler.assemble("Node0", config).await.unwrap();
@@ -496,6 +587,7 @@ mod tests {
         let assembler = ContextAssembler::new(&engine);
         let config = AssemblyConfig {
             format: ContextFormat::Plain,
+            fusion_config: None,
             ..Default::default()
         };
 
@@ -517,6 +609,7 @@ mod tests {
         let assembler = ContextAssembler::new(&engine);
         let config = AssemblyConfig {
             format: ContextFormat::Json,
+            fusion_config: None,
             ..Default::default()
         };
 

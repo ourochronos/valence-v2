@@ -305,6 +305,7 @@ pub async fn search_impl(
         tier_reached: None,
         time_ms: None,
         budget_exhausted: None,
+        fallback: None, // MCP search uses embeddings (warm mode only)
     })
 }
 

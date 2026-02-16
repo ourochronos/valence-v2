@@ -70,11 +70,12 @@ impl WorkingSet {
 
     /// Build a working set from a query string.
     ///
-    /// Process:
-    /// 1. Find query node by value, get its embedding
-    /// 2. Find k nearest neighbors via embedding similarity
-    /// 3. Expand via graph neighbors (1-2 hops from each result)
-    /// 4. Include confidence scores for each triple
+    /// Process (with graceful degradation):
+    /// 1. Find query node by value
+    /// 2. Try embedding similarity search first
+    /// 3. Fall back to graph traversal if embeddings don't exist
+    /// 4. Expand via graph neighbors (1-2 hops from each result)
+    /// 5. Include confidence scores for each triple
     ///
     /// # Arguments
     ///
@@ -86,74 +87,122 @@ impl WorkingSet {
     ///
     /// A WorkingSet containing the relevant subgraph
     pub async fn from_query(engine: &ValenceEngine, query: &str, k: usize) -> Result<Self> {
-        let mut working_set = WorkingSet::new();
-
-        // Step 1: Find query node and get its embedding
         let query_node = engine
             .store
             .find_node_by_value(query)
             .await?
             .context("Query node not found")?;
 
+        // Try embedding search first
         let embeddings_store = engine.embeddings.read().await;
-        let query_embedding = embeddings_store
-            .get(query_node.id)
-            .context("No embedding found for query node")?;
+        let query_embedding = embeddings_store.get(query_node.id);
 
-        // Step 2: Find k nearest neighbors
-        let neighbors = embeddings_store
-            .query_nearest(query_embedding, k)
-            .context("Failed to query nearest neighbors")?;
-        
-        drop(embeddings_store); // Release lock before async operations
+        if let Some(embedding) = query_embedding {
+            // Warm mode: use embedding similarity
+            let neighbors = embeddings_store
+                .query_nearest(embedding, k)
+                .context("Failed to query nearest neighbors")?;
+            
+            drop(embeddings_store); // Release lock before async operations
 
-        // Add the query node itself
-        working_set.add_node(query_node.id);
+            let mut working_set = WorkingSet::new();
+            working_set.add_node(query_node.id);
 
-        // Step 3: Add neighbor nodes and expand via graph
-        for (node_id, _similarity) in neighbors {
-            working_set.add_node(node_id);
+            // Step 3: Add neighbor nodes and expand via graph
+            for (node_id, _similarity) in neighbors {
+                working_set.add_node(node_id);
 
-            // Expand 1-2 hops from this node
-            // First hop: direct neighbors
-            let first_hop = engine
-                .store
-                .neighbors(node_id, 1)
-                .await
-                .context("Failed to get first-hop neighbors")?;
-
-            for triple in first_hop {
-                // Add nodes
-                working_set.add_node(triple.subject);
-                working_set.add_node(triple.object);
-
-                // Add triple with its weight as confidence
-                working_set.add_triple(triple.clone(), triple.weight);
-            }
-
-            // Second hop: neighbors of neighbors (but limit expansion)
-            // We only expand from the top k/2 nodes to avoid explosion
-            if working_set.node_count() < k * 3 {
-                let second_hop = engine
+                // Expand 1-2 hops from this node
+                let first_hop = engine
                     .store
-                    .neighbors(node_id, 2)
+                    .neighbors(node_id, 1)
                     .await
-                    .context("Failed to get second-hop neighbors")?;
+                    .context("Failed to get first-hop neighbors")?;
 
-                for triple in second_hop {
-                    // Only add if we don't already have too many nodes
-                    if working_set.node_count() >= k * 5 {
-                        break;
-                    }
-
+                for triple in first_hop {
                     working_set.add_node(triple.subject);
                     working_set.add_node(triple.object);
+                    working_set.add_triple(triple.clone(), triple.weight);
+                }
 
-                    // Second hop triples get lower confidence (decay)
-                    let decayed_confidence = triple.weight * 0.5;
-                    working_set.add_triple(triple.clone(), decayed_confidence);
+                // Second hop: neighbors of neighbors (but limit expansion)
+                if working_set.node_count() < k * 3 {
+                    let second_hop = engine
+                        .store
+                        .neighbors(node_id, 2)
+                        .await
+                        .context("Failed to get second-hop neighbors")?;
+
+                    for triple in second_hop {
+                        if working_set.node_count() >= k * 5 {
+                            break;
+                        }
+
+                        working_set.add_node(triple.subject);
+                        working_set.add_node(triple.object);
+
+                        // Second hop triples get lower confidence (decay)
+                        let decayed_confidence = triple.weight * 0.5;
+                        working_set.add_triple(triple.clone(), decayed_confidence);
+                    }
                 }
             }
+
+            Ok(working_set)
+        } else {
+            // Cold mode: fall back to graph-only traversal
+            drop(embeddings_store);
+            
+            tracing::warn!(
+                "No embedding found for query node '{}', falling back to graph-based traversal",
+                query
+            );
+            
+            Self::from_query_graph_only(engine, query, 2).await
+        }
+    }
+
+    /// Build a working set using pure graph traversal (no embeddings).
+    ///
+    /// This is the cold engine fallback — works without any embeddings by
+    /// traversing the graph starting from the query node.
+    ///
+    /// # Arguments
+    ///
+    /// * `engine` - The ValenceEngine to query
+    /// * `query` - The query string (matched against node values)
+    /// * `depth` - Maximum graph traversal depth
+    ///
+    /// # Returns
+    ///
+    /// A WorkingSet containing the graph neighborhood
+    pub async fn from_query_graph_only(
+        engine: &ValenceEngine,
+        query: &str,
+        depth: u32,
+    ) -> Result<Self> {
+        let mut working_set = WorkingSet::new();
+
+        // Find query node
+        let query_node = engine
+            .store
+            .find_node_by_value(query)
+            .await?
+            .context("Query node not found")?;
+
+        working_set.add_node(query_node.id);
+
+        // Graph traversal from query node
+        let triples = engine
+            .store
+            .neighbors(query_node.id, depth)
+            .await
+            .context("Failed to traverse graph neighbors")?;
+
+        for triple in triples {
+            working_set.add_node(triple.subject);
+            working_set.add_node(triple.object);
+            working_set.add_triple(triple.clone(), triple.weight);
         }
 
         Ok(working_set)
@@ -282,11 +331,34 @@ mod tests {
         // Create a single node with no connections
         let _lonely = engine.store.find_or_create_node("lonely").await.unwrap();
 
-        // Recompute embeddings — isolated nodes won't get embeddings
-        let _ = engine.recompute_embeddings(4).await;
-
-        // Build working set — should return error since no embedding exists
+        // Don't compute embeddings — should fall back to graph traversal
+        // Build working set — should succeed with graph-only mode
         let result = WorkingSet::from_query(&engine, "lonely", 5).await;
-        assert!(result.is_err());
+        assert!(result.is_ok());
+        
+        let ws = result.unwrap();
+        // Should have at least the query node
+        assert_eq!(ws.node_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_from_query_graph_only() {
+        let engine = ValenceEngine::new();
+
+        // Build a small graph
+        let alice = engine.store.find_or_create_node("Alice").await.unwrap();
+        let bob = engine.store.find_or_create_node("Bob").await.unwrap();
+        let carol = engine.store.find_or_create_node("Carol").await.unwrap();
+
+        engine.store.insert_triple(Triple::new(alice.id, "knows", bob.id)).await.unwrap();
+        engine.store.insert_triple(Triple::new(bob.id, "knows", carol.id)).await.unwrap();
+
+        // Use graph-only mode (no embeddings needed)
+        let ws = WorkingSet::from_query_graph_only(&engine, "Alice", 2).await.unwrap();
+
+        // Should have found nodes via graph traversal
+        assert!(ws.node_count() > 0);
+        assert!(ws.contains_node(alice.id));
+        assert!(ws.triple_count() > 0);
     }
 }
