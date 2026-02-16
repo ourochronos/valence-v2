@@ -38,6 +38,9 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chro
 # MCP (Model Context Protocol) support
 rmcp = { version = "0.15", features = ["server", "transport-io"] }
 schemars = "1.2"  # Required for JsonSchema derives
+# Random number generation for Node2Vec
+rand = "0.8"
+log = "0.4"
 
 [dev-dependencies]
 tokio-test = "0.4"

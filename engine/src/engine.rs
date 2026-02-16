@@ -6,7 +6,7 @@ use anyhow::{Result, Context};
 
 use crate::{
     storage::{MemoryStore, TripleStore},
-    embeddings::{EmbeddingStore, memory::MemoryEmbeddingStore, spectral},
+    embeddings::{EmbeddingStore, memory::MemoryEmbeddingStore, spectral, node2vec},
     stigmergy::AccessTracker,
 };
 
@@ -65,6 +65,29 @@ impl ValenceEngine {
         // Replace the embedding store with new embeddings
         let new_store = MemoryEmbeddingStore::from_embeddings(embeddings_map)
             .context("Failed to create embedding store from computed embeddings")?;
+
+        let mut embeddings = self.embeddings.write().await;
+        *embeddings = new_store;
+
+        Ok(count)
+    }
+
+    /// Recompute Node2Vec embeddings from the current graph state
+    ///
+    /// This uses random-walk-based embeddings to capture local neighborhood
+    /// structure, complementing the global structure captured by spectral embeddings.
+    pub async fn recompute_node2vec(&self, config: crate::embeddings::node2vec::Node2VecConfig) -> Result<usize> {
+        // Compute Node2Vec embeddings from current graph
+        let embeddings_map: std::collections::HashMap<crate::models::NodeId, Vec<f32>> = 
+            crate::embeddings::node2vec::compute_node2vec(self.store.as_ref(), config)
+                .await
+                .context("Failed to compute Node2Vec embeddings")?;
+
+        let count = embeddings_map.len();
+
+        // Replace the embedding store with new embeddings
+        let new_store = MemoryEmbeddingStore::from_embeddings(embeddings_map)
+            .context("Failed to create embedding store from Node2Vec embeddings")?;
 
         let mut embeddings = self.embeddings.write().await;
         *embeddings = new_store;
@@ -313,5 +336,44 @@ mod tests {
 
         // Events don't decay unless they're old (24 hours by default)
         assert_eq!(decayed, 0);
+    }
+
+    #[tokio::test]
+    async fn test_recompute_node2vec() {
+        let engine = ValenceEngine::new();
+
+        // Create a small graph
+        let a = engine.store.find_or_create_node("A").await.unwrap();
+        let b = engine.store.find_or_create_node("B").await.unwrap();
+        let c = engine.store.find_or_create_node("C").await.unwrap();
+
+        engine.store.insert_triple(Triple::new(a.id, "knows", b.id)).await.unwrap();
+        engine.store.insert_triple(Triple::new(b.id, "knows", c.id)).await.unwrap();
+        engine.store.insert_triple(Triple::new(a.id, "likes", c.id)).await.unwrap();
+
+        // Initially no embeddings
+        assert!(!engine.has_embeddings().await);
+
+        // Compute Node2Vec embeddings
+        let config = crate::embeddings::node2vec::Node2VecConfig {
+            dimensions: 8,
+            walk_length: 10,
+            walks_per_node: 5,
+            epochs: 3,
+            ..Default::default()
+        };
+        
+        let count = engine.recompute_node2vec(config).await.unwrap();
+
+        // Should have 3 embeddings (one per node)
+        assert_eq!(count, 3);
+        assert!(engine.has_embeddings().await);
+        assert_eq!(engine.embedding_count().await, 3);
+
+        // Verify we can get an embedding
+        let embeddings = engine.embeddings.read().await;
+        let emb_a = embeddings.get(a.id);
+        assert!(emb_a.is_some());
+        assert_eq!(emb_a.unwrap().len(), 8);
     }
 }

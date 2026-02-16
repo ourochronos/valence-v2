@@ -58,7 +58,10 @@ pub fn create_router(engine: ValenceEngine) -> Router {
         .route("/maintenance/decay", post(trigger_decay))
         .route("/maintenance/evict", post(trigger_evict))
         .route("/maintenance/recompute-embeddings", post(recompute_embeddings))
+        .route("/maintenance/recompute-node2vec", post(recompute_node2vec))
         .route("/maintenance/reinforce", post(trigger_stigmergy_reinforcement))
+        // Context assembly
+        .route("/context", post(assemble_context))
         .with_state(state)
 }
 
@@ -377,6 +380,9 @@ async fn search(
     State(state): State<ApiState>,
     Json(req): Json<SearchRequest>,
 ) -> Result<Json<SearchResponse>, ApiError> {
+    use std::sync::Arc;
+    use crate::budget::{TieredRetriever, OperationBudget};
+
     // Validate k parameter (prevent pathological queries)
     if req.k == 0 {
         return Err(ApiError::BadRequest("k must be at least 1".to_string()));
@@ -385,6 +391,51 @@ async fn search(
         return Err(ApiError::BadRequest("k cannot exceed 1000 (too expensive)".to_string()));
     }
     
+    // Use tiered retrieval if requested
+    if req.use_tiered {
+        let budget_ms = req.budget_ms.unwrap_or(100);
+        let confidence_threshold = req.confidence_threshold.unwrap_or(0.8);
+        
+        // Validate budget parameters
+        if budget_ms == 0 {
+            return Err(ApiError::BadRequest("budget_ms must be at least 1".to_string()));
+        }
+        if budget_ms > 10000 {
+            return Err(ApiError::BadRequest("budget_ms cannot exceed 10000 (10 seconds)".to_string()));
+        }
+        if confidence_threshold < 0.0 || confidence_threshold > 1.0 {
+            return Err(ApiError::BadRequest("confidence_threshold must be between 0.0 and 1.0".to_string()));
+        }
+
+        // Create budget: time, hops, results
+        let budget = OperationBudget::new(budget_ms, 5, req.k);
+        
+        // Create tiered retriever
+        let retriever = TieredRetriever::new(Arc::new(state.engine.clone()));
+        
+        // Run tiered retrieval
+        let retrieval_result = retriever.retrieve(&req.query_node, budget, confidence_threshold).await?;
+        
+        // Convert to API response
+        let results: Vec<SearchResult> = retrieval_result.results
+            .into_iter()
+            .map(|r| SearchResult {
+                node_id: r.node_id.to_string(),
+                value: r.value,
+                similarity: r.similarity,
+                confidence: r.confidence,
+            })
+            .collect();
+        
+        return Ok(Json(SearchResponse {
+            results,
+            tier_reached: Some(retrieval_result.tier_reached),
+            time_ms: Some(retrieval_result.time_ms),
+            budget_exhausted: Some(retrieval_result.budget_exhausted),
+        }));
+    }
+
+    // Standard (non-tiered) search
     // Find the query node by value
     let query_node = state
         .engine
@@ -454,7 +505,12 @@ async fn search(
         });
     }
 
-    Ok(Json(SearchResponse { results }))
+    Ok(Json(SearchResponse {
+        results,
+        tier_reached: None,
+        time_ms: None,
+        budget_exhausted: None,
+    }))
 }
 
 /// POST /maintenance/recompute-embeddings — Recompute embeddings from current graph
@@ -475,6 +531,60 @@ async fn recompute_embeddings(
     Ok(Json(RecomputeEmbeddingsResponse { embedding_count }))
 }
 
+/// POST /maintenance/recompute-node2vec — Recompute Node2Vec embeddings from current graph
+/// POST /maintenance/recompute-node2vec — Recompute Node2Vec embeddings from current graph
+async fn recompute_node2vec(
+    State(state): State<ApiState>,
+    Json(req): Json<RecomputeNode2VecRequest>,
+) -> Result<Json<RecomputeNode2VecResponse>, ApiError> {
+    use crate::embeddings::node2vec;
+    
+    // Validate parameters
+    if req.dimensions == 0 {
+        return Err(ApiError::BadRequest("Dimensions must be at least 1".to_string()));
+    }
+    if req.dimensions > 512 {
+        return Err(ApiError::BadRequest("Dimensions cannot exceed 512 (too expensive)".to_string()));
+    }
+    if req.walk_length == 0 {
+        return Err(ApiError::BadRequest("Walk length must be at least 1".to_string()));
+    }
+    if req.walks_per_node == 0 {
+        return Err(ApiError::BadRequest("Walks per node must be at least 1".to_string()));
+    }
+    if req.p <= 0.0 {
+        return Err(ApiError::BadRequest("Parameter p must be positive".to_string()));
+    }
+    if req.q <= 0.0 {
+        return Err(ApiError::BadRequest("Parameter q must be positive".to_string()));
+    }
+    if req.window == 0 {
+        return Err(ApiError::BadRequest("Window size must be at least 1".to_string()));
+    }
+    if req.epochs == 0 {
+        return Err(ApiError::BadRequest("Epochs must be at least 1".to_string()));
+    }
+    if req.learning_rate <= 0.0 {
+        return Err(ApiError::BadRequest("Learning rate must be positive".to_string()));
+    }
+    
+    // Build config from request
+    let config = node2vec::Node2VecConfig {
+        dimensions: req.dimensions,
+        walk_length: req.walk_length,
+        walks_per_node: req.walks_per_node,
+        p: req.p,
+        q: req.q,
+        window: req.window,
+        epochs: req.epochs,
+        learning_rate: req.learning_rate,
+    };
+    
+    let embedding_count = state.engine.recompute_node2vec(config).await?;
+
+    Ok(Json(RecomputeNode2VecResponse { embedding_count }))
+}
+
 /// POST /maintenance/reinforce — Create edges based on co-access patterns (stigmergy)
 async fn trigger_stigmergy_reinforcement(
     State(state): State<ApiState>,
@@ -482,6 +592,50 @@ async fn trigger_stigmergy_reinforcement(
     let edges_created = state.engine.run_stigmergy_reinforcement().await?;
 
     Ok(Json(ReinforceResponse { edges_created }))
+}
+
+/// POST /context — Assemble structured context for a query
+async fn assemble_context(
+    State(state): State<ApiState>,
+    Json(req): Json<ContextRequest>,
+) -> Result<Json<ContextResponse>, ApiError> {
+    use crate::context::{ContextAssembler, AssemblyConfig, ContextFormat};
+
+    // Validate parameters
+    if req.max_triples == 0 {
+        return Err(ApiError::BadRequest("max_triples must be at least 1".to_string()));
+    }
+    if req.max_triples > 1000 {
+        return Err(ApiError::BadRequest("max_triples cannot exceed 1000 (too expensive)".to_string()));
+    }
+
+    // Parse format
+    let format = match req.format.to_lowercase().as_str() {
+        "plain" => ContextFormat::Plain,
+        "markdown" | "md" => ContextFormat::Markdown,
+        "json" => ContextFormat::Json,
+        _ => return Err(ApiError::BadRequest(format!("Invalid format: {}. Must be one of: plain, markdown, json", req.format))),
+    };
+
+    // Build config
+    let config = AssemblyConfig {
+        max_triples: req.max_triples,
+        max_nodes: req.max_triples * 2, // Reasonable node limit
+        include_confidence: true,
+        include_sources: false,
+        format,
+    };
+
+    // Assemble context
+    let assembler = ContextAssembler::new(&state.engine);
+    let context = assembler.assemble(&req.query, config).await?;
+
+    Ok(Json(ContextResponse {
+        context: context.formatted,
+        triple_count: context.triples.len(),
+        node_count: context.nodes.len(),
+        total_relevance: context.total_score,
+    }))
 }
 
 /// API error types
@@ -931,6 +1085,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_recompute_node2vec() {
+        let engine = crate::engine::ValenceEngine::new();
+        let app = create_router(engine.clone());
+
+        // Insert triples
+        let insert_req = InsertTriplesRequest {
+            triples: vec![
+                TripleInput {
+                    subject: "Alice".to_string(),
+                    predicate: "knows".to_string(),
+                    object: "Bob".to_string(),
+                },
+                TripleInput {
+                    subject: "Bob".to_string(),
+                    predicate: "knows".to_string(),
+                    object: "Carol".to_string(),
+                },
+                TripleInput {
+                    subject: "Alice".to_string(),
+                    predicate: "works_with".to_string(),
+                    object: "Carol".to_string(),
+                },
+            ],
+            source: None,
+        };
+
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/triples")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&insert_req).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Recompute Node2Vec embeddings with custom config
+        let recompute_req = RecomputeNode2VecRequest {
+            dimensions: 8,
+            walk_length: 10,
+            walks_per_node: 5,
+            p: 1.0,
+            q: 1.0,
+            window: 3,
+            epochs: 3,
+            learning_rate: 0.025,
+        };
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/maintenance/recompute-node2vec")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&recompute_req).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let recompute_resp: RecomputeNode2VecResponse = serde_json::from_slice(&body).unwrap();
+
+        // Should have embeddings for 3 nodes
+        assert_eq!(recompute_resp.embedding_count, 3);
+    }
+
+    #[tokio::test]
     async fn test_search() {
         let engine = crate::engine::ValenceEngine::new();
         let app = create_router(engine.clone());
@@ -993,6 +1222,9 @@ mod tests {
             query_node: "Alice".to_string(),
             k: 3,
             include_confidence: false,
+            use_tiered: false,
+            budget_ms: None,
+            confidence_threshold: None,
         };
 
         let response = app
@@ -1027,6 +1259,11 @@ mod tests {
         for i in 1..search_resp.results.len() {
             assert!(search_resp.results[i - 1].similarity >= search_resp.results[i].similarity);
         }
+
+        // Standard search should not include tiered metadata
+        assert!(search_resp.tier_reached.is_none());
+        assert!(search_resp.time_ms.is_none());
+        assert!(search_resp.budget_exhausted.is_none());
     }
 
     #[tokio::test]
@@ -1085,6 +1322,9 @@ mod tests {
             query_node: "Alice".to_string(),
             k: 2,
             include_confidence: true,
+            use_tiered: false,
+            budget_ms: None,
+            confidence_threshold: None,
         };
 
         let response = app
@@ -1111,5 +1351,106 @@ mod tests {
         for result in &search_resp.results {
             assert!(result.confidence.is_some());
         }
+    }
+
+    #[tokio::test]
+    async fn test_tiered_search() {
+        let engine = crate::engine::ValenceEngine::new();
+        let app = create_router(engine.clone());
+
+        // Insert triples
+        let insert_req = InsertTriplesRequest {
+            triples: vec![
+                TripleInput {
+                    subject: "Alice".to_string(),
+                    predicate: "knows".to_string(),
+                    object: "Bob".to_string(),
+                },
+                TripleInput {
+                    subject: "Bob".to_string(),
+                    predicate: "knows".to_string(),
+                    object: "Carol".to_string(),
+                },
+                TripleInput {
+                    subject: "Alice".to_string(),
+                    predicate: "works_with".to_string(),
+                    object: "Carol".to_string(),
+                },
+            ],
+            source: Some(SourceInput {
+                source_type: SourceType::Conversation,
+                reference: Some("test".to_string()),
+            }),
+        };
+
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/triples")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&insert_req).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Recompute embeddings
+        let recompute_req = RecomputeEmbeddingsRequest { dimensions: 4 };
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/maintenance/recompute-embeddings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&recompute_req).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Tiered search with budget
+        let search_req = SearchRequest {
+            query_node: "Alice".to_string(),
+            k: 3,
+            include_confidence: false,
+            use_tiered: true,
+            budget_ms: Some(1000),
+            confidence_threshold: Some(0.8),
+        };
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/search")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&search_req).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let search_resp: SearchResponse = serde_json::from_slice(&body).unwrap();
+
+        // Should have results
+        assert!(!search_resp.results.is_empty());
+
+        // Should include tiered metadata
+        assert!(search_resp.tier_reached.is_some());
+        assert!(search_resp.time_ms.is_some());
+        assert!(search_resp.budget_exhausted.is_some());
+
+        let tier = search_resp.tier_reached.unwrap();
+        assert!(tier >= 1 && tier <= 3);
+
+        // Should complete within budget
+        assert!(search_resp.time_ms.unwrap() <= 1000);
     }
 }

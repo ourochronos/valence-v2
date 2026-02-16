@@ -7,8 +7,6 @@
 
 pub mod spectral;
 pub mod memory;
-
-// Stub for future implementation
 pub mod node2vec;
 
 use std::collections::HashMap;
