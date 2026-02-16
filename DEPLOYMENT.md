@@ -1,420 +1,235 @@
-# Valence v2 Deployment Guide
+# Valence Engine Deployment Guide
 
-## Quick Start
+## Quick Start with Docker Compose
 
-### Option 1: Docker Compose (Recommended for Production)
-
-The easiest way to deploy Valence with persistent PostgreSQL storage:
+The easiest way to deploy Valence Engine is using Docker Compose:
 
 ```bash
-# Copy example environment file
+# 1. Clone the repository
+git clone <repository-url>
+cd valence-v2
+
+# 2. (Optional) Copy and customize environment variables
 cp .env.example .env
+# Edit .env to set your PostgreSQL password and other settings
 
-# Edit .env if needed (optional - defaults work for local testing)
-nano .env
+# 3. Start services
+docker-compose up
 
-# Start services
-docker-compose up -d
-
-# Check status
-docker-compose ps
-
-# View logs
-docker-compose logs -f valence-engine
+# 4. Verify deployment
+curl http://localhost:8421/health
 ```
 
-The engine will be available at `http://localhost:8421`
-
-### Option 2: Native (Development)
-
-For local development without Docker:
-
-```bash
-# Option A: Memory-only storage (default)
-./scripts/run.sh --native
-
-# Option B: With PostgreSQL
-# First, start a PostgreSQL instance (or use docker-compose for just postgres)
-docker-compose up -d postgres
-
-# Set DATABASE_URL and run
-export DATABASE_URL="postgresql://valence:valence_dev_password@localhost:5433/valence"
-./scripts/run.sh --native
-```
-
-### Option 3: Auto-detect
-
-The run script will automatically choose the best option:
-
-```bash
-./scripts/run.sh
-```
-
-This will:
-- Use `--native` if cargo is installed
-- Fall back to `--docker` if only Docker is available
-
-## Architecture
-
-### Multi-stage Docker Build
-
-The Dockerfile uses a two-stage build:
-
-1. **Build stage**: Compiles the Rust application with PostgreSQL support
-2. **Runtime stage**: Minimal Debian image with just the compiled binary
-
-This keeps the final image small (~100MB) while maintaining full build capabilities.
-
-### Services
-
-**valence-engine**
-- Valence triple store HTTP API
-- Port: 8421
-- Depends on: postgres (when using Docker Compose)
-- Health check: `GET /health`
-
-**postgres**
-- PostgreSQL 16 with pgvector extension
-- Port: 5433 (mapped to avoid conflicts with local PostgreSQL on 5432)
-- Persistent volume: `valence-postgres-data`
-- Health check: `pg_isready`
+The engine will start with:
+- **PostgreSQL** database for persistent storage
+- **Valence Engine** HTTP server on port 8421
+- Automatic health checks and graceful shutdown
 
 ## Configuration
 
 ### Environment Variables
 
-All configuration can be set via environment variables or `.env` file:
+Create a `.env` file or set these environment variables:
 
 ```bash
+# PostgreSQL Configuration
+DATABASE_URL=postgresql://valence:your_password@postgres:5432/valence
+POSTGRES_PASSWORD=your_secure_password
+
 # Server Configuration
-VALENCE_HOST=0.0.0.0              # Host to bind to
-VALENCE_PORT=8421                  # Port to bind to
-
-# Database Configuration
-DATABASE_URL=postgresql://user:password@host:port/database
-
-# PostgreSQL Password (used by docker-compose)
-POSTGRES_PASSWORD=valence_dev_password
+VALENCE_HOST=0.0.0.0              # Bind address
+VALENCE_PORT=8421                  # HTTP port
+VALENCE_MODE=http                  # Server mode: http, mcp, or both
 
 # Logging
-RUST_LOG=info                      # trace, debug, info, warn, error
+RUST_LOG=info                      # Log level: trace, debug, info, warn, error
 ```
 
-### Storage Backends
+### Server Modes
 
-Valence supports two storage backends:
+- **http**: HTTP API server only (default, production mode)
+- **mcp**: MCP (Model Context Protocol) server only (stdin/stdout)
+- **both**: Run HTTP and MCP servers concurrently
 
-#### 1. Memory Store (Default)
-- **Pros**: Fast, simple, no setup
-- **Cons**: Data lost on restart, not suitable for production
-- **Use case**: Development, testing, temporary workloads
+## Health Monitoring
+
+The `/health` endpoint provides comprehensive engine status:
 
 ```bash
-# No DATABASE_URL needed
-./scripts/run.sh --native
+curl http://localhost:8421/health | jq
 ```
 
-#### 2. PostgreSQL (Recommended)
-- **Pros**: Persistent, reliable, scalable
-- **Cons**: Requires PostgreSQL instance
-- **Use case**: Production, persistent data
+Response includes:
+- **Store type**: `postgres` or `memory`
+- **Uptime**: Human-readable uptime
+- **Storage stats**: Triple count, node count, utilization
+- **Module status**: Embeddings, stigmergy, lifecycle, inference, resilience
+- **Degradation level**: Current graceful degradation state
+
+## Production Deployment
+
+### Docker Build Features
+
+The Dockerfile uses a multi-stage build with cargo-chef for optimal layer caching:
+1. **Planner stage**: Generates dependency manifest
+2. **Builder stage**: Builds dependencies (cached) and application
+3. **Runtime stage**: Minimal Debian-slim image with only runtime dependencies
+
+### Graceful Shutdown
+
+The engine handles SIGTERM/SIGINT gracefully:
+- In-flight requests are allowed to complete (30s grace period)
+- PostgreSQL connections are closed cleanly
+- State is flushed to disk
+
+### Health Checks
+
+Docker and docker-compose both include health checks:
+- Health endpoint polled every 10 seconds
+- 3 retries before marking unhealthy
+- 15-second startup grace period
+
+## Native Deployment (Without Docker)
+
+For development or custom deployments:
 
 ```bash
-# Set DATABASE_URL
-export DATABASE_URL="postgresql://valence:password@localhost:5433/valence"
-./scripts/run.sh --native
+# 1. Install Rust (if not already installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# Or use docker-compose (includes PostgreSQL)
-docker-compose up
+# 2. Install PostgreSQL (optional, for persistent storage)
+# macOS: brew install postgresql
+# Linux: apt install postgresql postgresql-contrib
+
+# 3. Set up database
+createdb valence
+export DATABASE_URL=postgresql://user:pass@localhost:5432/valence
+
+# 4. Build and run
+cd engine
+cargo run --release --features postgres -- --host 0.0.0.0 --port 8421
+
+# Or use the run script
+../scripts/run.sh --native
 ```
 
-## Deployment Scenarios
+## Ports
 
-### Scenario 1: Local Development (Memory)
+- **8421**: Valence Engine HTTP API
+- **5433**: PostgreSQL (mapped from internal 5432 to avoid conflicts)
+
+## Volumes
+
+Docker Compose creates a persistent volume for PostgreSQL:
+- **valence-postgres-data**: Database storage
+
+To backup/restore:
 
 ```bash
-# Terminal 1: Run valence with memory storage
-cd ~/projects/valence-v2
-./scripts/run.sh --native
+# Backup
+docker exec valence-postgres pg_dump -U valence valence > backup.sql
 
-# Terminal 2: Test the API
-curl http://localhost:8421/health
-curl http://localhost:8421/stats
+# Restore
+docker exec -i valence-postgres psql -U valence valence < backup.sql
 ```
 
-### Scenario 2: Local Development (PostgreSQL)
+## Startup Banner
 
-```bash
-# Start just PostgreSQL
-docker-compose up -d postgres
+On startup, the engine displays:
+- Version information
+- Configuration summary (mode, host, port, database)
+- Module status (embeddings, stigmergy, lifecycle, inference)
 
-# Wait for postgres to be ready
-docker-compose logs -f postgres  # Ctrl+C when ready
+Example:
 
-# Run valence natively with PostgreSQL
-export DATABASE_URL="postgresql://valence:valence_dev_password@localhost:5433/valence"
-./scripts/run.sh --native
+```
+╔══════════════════════════════════════════════════════════════════════════╗
+║                          VALENCE ENGINE v0.1.0                          ║
+║          Triple-based Knowledge Substrate with Topology Embeddings       ║
+╚══════════════════════════════════════════════════════════════════════════╝
+═══════════════════════════════════════════════════════════════════
+Configuration Summary:
+  Mode:         http
+  Host:         0.0.0.0
+  Port:         8421
+  Database:     PostgreSQL (postgresql://valence:****@postgres:5432/valence)
+  Log Level:    info
+═══════════════════════════════════════════════════════════════════
+Engine Status:
+  Store Type:            postgres
+  Triple Count:          0
+  Node Count:            0
+  Max Triples:           1000000
+  Max Nodes:             100000
+  Embeddings Enabled:    false
+  Stigmergy Enabled:     true
+  Lifecycle Management:  true
+  Resilience Module:     true
+  Inference Training:    true
+═══════════════════════════════════════════════════════════════════
 ```
 
-### Scenario 3: Production (Docker Compose)
+## API Documentation
 
-```bash
-# On your server
-git clone <repo-url> valence-v2
-cd valence-v2
+See the full API documentation in `docs/api.md` or explore the endpoints:
 
-# Configure environment
-cp .env.example .env
-nano .env  # Set production passwords, etc.
-
-# Start services in detached mode
-docker-compose up -d
-
-# Verify
-docker-compose ps
-curl http://localhost:8421/health
-
-# View logs
-docker-compose logs -f
-
-# Stop
-docker-compose down
-
-# Stop and remove volumes (CAUTION: deletes data!)
-docker-compose down -v
-```
-
-### Scenario 4: Production (Kubernetes)
-
-For Kubernetes deployment, use the Docker image as a base:
-
-```bash
-# Build and push image
-docker build -t myregistry/valence-engine:v0.1.0 .
-docker push myregistry/valence-engine:v0.1.0
-
-# Use in Kubernetes with external PostgreSQL
-# (K8s manifests not included yet - TODO)
-```
-
-## API Endpoints
-
-Once running, the following endpoints are available:
-
-### Health & Stats
-- `GET /health` - Health check
-- `GET /stats` - Engine statistics
-
-### Triples
+- `GET /health` - Health check and status
 - `POST /triples` - Insert triples
-- `GET /triples?subject=...&predicate=...&object=...` - Query triples
-- `GET /triples/{id}/sources` - Get triple sources
-
-### Nodes
-- `GET /nodes/{node}/neighbors?depth=N` - Get k-hop neighborhood
-
-### Search
-- `POST /search` - Semantic search using embeddings
-
-### Maintenance
-- `POST /maintenance/decay` - Apply decay to all triples
-- `POST /maintenance/evict` - Remove low-weight triples
-- `POST /maintenance/recompute-embeddings` - Recompute graph embeddings
+- `GET /triples` - Query triples
+- `POST /search` - Semantic search
+- `GET /stats` - Engine statistics
+- `POST /maintenance/*` - Lifecycle operations
 
 ## Troubleshooting
 
-### "DATABASE_URL provided but postgres feature not enabled"
+### Container won't start
+- Check logs: `docker-compose logs valence-engine`
+- Verify PostgreSQL is healthy: `docker-compose ps`
+- Check environment variables in `.env`
 
-If you see this warning:
-- Rebuild with `--features postgres`
-- Or use docker-compose (already includes postgres feature)
+### Health check failing
+- Ensure port 8421 is accessible
+- Check logs for startup errors
+- Verify PostgreSQL connection
 
-```bash
-cd engine
-cargo build --release --features postgres
-```
+### Performance issues
+- Increase PostgreSQL resources in docker-compose.yml
+- Tune RUST_LOG (reduce to `warn` or `error`)
+- Check utilization via `/health` endpoint
 
-### Port 8421 already in use
+### Database connection errors
+- Verify DATABASE_URL format
+- Ensure PostgreSQL container is running
+- Check network connectivity: `docker-compose exec valence-engine ping postgres`
 
-Change the port in `.env`:
-
-```bash
-VALENCE_PORT=8422
-```
-
-Or pass it directly:
-
-```bash
-valence-engine --port 8422
-```
-
-### Docker Compose fails to start
-
-Check logs for specific errors:
-
-```bash
-docker-compose logs valence-engine
-docker-compose logs postgres
-```
-
-Common issues:
-- Port conflicts: Change ports in docker-compose.yml
-- Volume permissions: Check Docker volume mounts
-- Database connection: Ensure postgres is healthy before starting valence-engine
-
-### Database connection refused
-
-If running natively with PostgreSQL:
-1. Ensure PostgreSQL is running
-2. Check DATABASE_URL format:
-   ```
-   postgresql://user:password@host:port/database
-   ```
-3. Verify port (5433 for docker-compose postgres, 5432 for system postgres)
-4. Test connection:
-   ```bash
-   psql "$DATABASE_URL" -c "SELECT 1;"
-   ```
-
-## Maintenance
-
-### Backup PostgreSQL Data
-
-```bash
-# Using docker-compose
-docker-compose exec postgres pg_dump -U valence valence > backup.sql
-
-# Restore
-docker-compose exec -T postgres psql -U valence valence < backup.sql
-```
-
-### Upgrade
-
-```bash
-# Pull latest changes
-git pull
-
-# Rebuild and restart
-docker-compose up -d --build
-```
-
-### View Logs
-
-```bash
-# All services
-docker-compose logs -f
-
-# Just valence-engine
-docker-compose logs -f valence-engine
-
-# Last 100 lines
-docker-compose logs --tail=100 valence-engine
-```
-
-### Stop Services
-
-```bash
-# Stop (keeps data)
-docker-compose stop
-
-# Stop and remove containers (keeps volumes)
-docker-compose down
-
-# Stop and remove everything including data (DESTRUCTIVE!)
-docker-compose down -v
-```
-
-## Performance Tuning
-
-### PostgreSQL
-
-For production, consider tuning PostgreSQL settings in `docker-compose.yml`:
-
-```yaml
-services:
-  postgres:
-    environment:
-      POSTGRES_SHARED_BUFFERS: 256MB
-      POSTGRES_EFFECTIVE_CACHE_SIZE: 1GB
-      POSTGRES_WORK_MEM: 16MB
-```
-
-### Valence Engine
-
-- Set `RUST_LOG=warn` or `RUST_LOG=error` in production to reduce logging overhead
-- Consider running multiple instances behind a load balancer
-- Use PostgreSQL connection pooling (already handled by sqlx)
-
-## Security
+## Security Considerations
 
 For production deployments:
 
-1. **Change default passwords**:
-   ```bash
-   POSTGRES_PASSWORD=<strong-random-password>
-   ```
+1. **Change default passwords** in `.env`
+2. **Use secrets management** (Docker secrets, Kubernetes secrets, etc.)
+3. **Enable TLS** via reverse proxy (nginx, Caddy)
+4. **Restrict network access** (firewall rules, security groups)
+5. **Run as non-root** (already configured in Dockerfile)
+6. **Keep dependencies updated** (`docker-compose pull && docker-compose up`)
 
-2. **Use environment-specific configs**:
-   - Don't commit `.env` to version control
-   - Use `.env.production`, `.env.staging`, etc.
+## Monitoring
 
-3. **Enable TLS for PostgreSQL**:
-   - Mount SSL certificates
-   - Configure PostgreSQL for SSL connections
+Recommended monitoring setup:
 
-4. **Restrict network access**:
-   - Use Docker networks
-   - Firewall rules
-   - VPN/private networking
+- **Health checks**: Poll `/health` endpoint
+- **Logs**: Aggregate via Loki, Elasticsearch, or CloudWatch
+- **Metrics**: Export via Prometheus (future enhancement)
+- **Alerts**: Trigger on degradation level changes or health check failures
 
-5. **Regular backups**:
-   - Automated PostgreSQL backups
-   - Test restore procedures
+## Scaling
 
-## Development
+For horizontal scaling:
+- Use a shared PostgreSQL instance
+- Deploy multiple engine instances behind a load balancer
+- Consider read replicas for PostgreSQL if read-heavy
 
-### Build from Source
-
-```bash
-cd engine
-
-# Without PostgreSQL
-cargo build --release
-
-# With PostgreSQL
-cargo build --release --features postgres
-
-# Run tests
-cargo test
-
-# With PostgreSQL tests
-cargo test --features postgres
-```
-
-### Hot Reload Development
-
-```bash
-# Install cargo-watch
-cargo install cargo-watch
-
-# Auto-reload on changes
-cd engine
-cargo watch -x 'run --features postgres'
-```
-
-## Next Steps
-
-- Set up monitoring (Prometheus, Grafana)
-- Add health check integrations
-- Configure reverse proxy (nginx, Caddy)
-- Set up CI/CD pipeline
-- Create Kubernetes manifests
-- Add rate limiting
-- Implement authentication/authorization
-
-## Support
-
-For issues, questions, or contributions:
-- GitHub Issues: [Add your repo URL]
-- Documentation: See `docs/` directory
-- API Reference: See `docs/api.md`
+For vertical scaling:
+- Increase container CPU/memory limits
+- Tune PostgreSQL `max_connections` and buffer sizes
+- Adjust engine lifecycle bounds (`MAX_TRIPLES`, `MAX_NODES`)

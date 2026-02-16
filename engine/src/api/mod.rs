@@ -24,24 +24,37 @@ use resilience_endpoints::{get_degradation_status, reset_degradation};
 #[derive(Clone)]
 pub struct ApiState {
     pub engine: ValenceEngine,
+    pub start_time: std::time::Instant,
+    pub store_type: String,
 }
 
 impl ApiState {
-    pub fn new(engine: ValenceEngine) -> Self {
-        Self { engine }
+    pub fn new(engine: ValenceEngine, store_type: String) -> Self {
+        Self { 
+            engine,
+            start_time: std::time::Instant::now(),
+            store_type,
+        }
     }
 
     /// Backward compatibility: create from a MemoryStore
     pub fn from_store(store: MemoryStore) -> Self {
         Self {
             engine: ValenceEngine::from_store(store),
+            start_time: std::time::Instant::now(),
+            store_type: "memory".to_string(),
         }
     }
 }
 
 /// Create the API router with all endpoints
 pub fn create_router(engine: ValenceEngine) -> Router {
-    let state = ApiState::new(engine);
+    create_router_with_store_type(engine, "memory".to_string())
+}
+
+/// Create the API router with store type specification
+pub fn create_router_with_store_type(engine: ValenceEngine, store_type: String) -> Router {
+    let state = ApiState::new(engine, store_type);
 
     Router::new()
         // Health check
@@ -76,16 +89,87 @@ pub fn create_router(engine: ValenceEngine) -> Router {
         .with_state(state)
 }
 
-/// GET /health — Health check endpoint
+/// GET /health — Enhanced health check endpoint
 async fn health_check(State(state): State<ApiState>) -> Result<Json<serde_json::Value>, ApiError> {
     // Check if store is accessible by counting triples
     let triple_count = state.engine.store.count_triples().await?;
+    let node_count = state.engine.store.count_nodes().await?;
+    
+    // Calculate uptime
+    let uptime_secs = state.start_time.elapsed().as_secs();
+    let uptime_human = format_duration(uptime_secs);
+    
+    // Check module status
+    let has_embeddings = state.engine.has_embeddings().await;
+    let embeddings_lock = state.engine.embeddings.read().await;
+    let embedding_count = embeddings_lock.len();
+    drop(embeddings_lock);
+    
+    let has_feedback_recorder = state.engine.feedback_recorder.is_some();
+    let has_weight_adjuster = state.engine.weight_adjuster.is_some();
+    
+    // Get lifecycle status
+    let lifecycle_status = state.engine.lifecycle_status().await?;
+    
+    // Get current degradation level
+    let degradation_level = state.engine.resilience.current_level().await;
     
     Ok(Json(serde_json::json!({
         "status": "healthy",
-        "triple_count": triple_count,
-        "has_embeddings": state.engine.has_embeddings().await,
+        "store_type": state.store_type,
+        "uptime_seconds": uptime_secs,
+        "uptime": uptime_human,
+        "storage": {
+            "triple_count": triple_count,
+            "node_count": node_count,
+            "max_triples": lifecycle_status.max_triples,
+            "max_nodes": lifecycle_status.max_nodes,
+            "utilization": lifecycle_status.utilization,
+        },
+        "modules": {
+            "embeddings": {
+                "enabled": has_embeddings,
+                "count": embedding_count,
+            },
+            "stigmergy": {
+                "enabled": true,
+            },
+            "lifecycle": {
+                "enabled": true,
+                "bounds_enforced": lifecycle_status.triples_exceeded || lifecycle_status.nodes_exceeded,
+            },
+            "inference": {
+                "feedback_recorder": has_feedback_recorder,
+                "weight_adjuster": has_weight_adjuster,
+            },
+            "resilience": {
+                "enabled": true,
+                "degradation_level": format!("{:?}", degradation_level),
+            },
+        },
     })))
+}
+
+/// Format duration in human-readable format (e.g., "2d 3h 45m 12s")
+fn format_duration(seconds: u64) -> String {
+    let days = seconds / 86400;
+    let hours = (seconds % 86400) / 3600;
+    let minutes = (seconds % 3600) / 60;
+    let secs = seconds % 60;
+    
+    let mut parts = Vec::new();
+    if days > 0 {
+        parts.push(format!("{}d", days));
+    }
+    if hours > 0 || days > 0 {
+        parts.push(format!("{}h", hours));
+    }
+    if minutes > 0 || hours > 0 || days > 0 {
+        parts.push(format!("{}m", minutes));
+    }
+    parts.push(format!("{}s", secs));
+    
+    parts.join(" ")
 }
 
 /// POST /triples — Insert one or more triples with optional source
