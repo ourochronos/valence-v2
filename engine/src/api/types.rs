@@ -475,3 +475,81 @@ pub struct LifecycleStatusResponse {
     /// Utilization percentage (0.0-1.0)
     pub utilization: f64,
 }
+
+// ========== Inference Training Loop Types ==========
+
+/// Request to submit usage feedback for an assembled context
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SubmitFeedbackRequest {
+    /// Context identifier (links to the original query/context assembly)
+    pub context_id: String,
+    
+    /// Feedback for individual triples
+    pub triples: Vec<TripleFeedbackInput>,
+    
+    /// Optional: Overall quality score for the assembled context (0.0 - 1.0)
+    pub context_quality: Option<f64>,
+}
+
+/// Feedback for a single triple in a context window
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TripleFeedbackInput {
+    /// The triple being evaluated
+    pub triple_id: String,
+    
+    /// How the triple was used
+    pub signal: FeedbackSignalType,
+}
+
+/// Signal indicating how a triple was used (or not used) in an LLM context
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedbackSignalType {
+    /// Triple was directly cited/used in the LLM's response
+    Cited,
+    /// Triple was relevant context that informed the response (but not directly cited)
+    Relevant,
+    /// Triple was in the context window but ignored
+    Ignored,
+    /// Triple was misleading or caused confusion
+    Misleading,
+}
+
+/// Response from submitting feedback
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SubmitFeedbackResponse {
+    /// Feedback event ID
+    pub feedback_id: String,
+    
+    /// Number of triples successfully adjusted
+    pub adjusted_count: usize,
+    
+    /// Number of errors encountered
+    pub error_count: usize,
+    
+    /// Average weight change across all adjustments
+    pub avg_weight_change: f64,
+    
+    /// Whether stigmergy was updated (co-access patterns recorded)
+    pub stigmergy_updated: bool,
+}
+
+/// Query parameters for feedback stats endpoint
+#[derive(Debug, Deserialize)]
+pub struct FeedbackStatsParams {
+    /// Triple ID to get stats for
+    pub triple_id: String,
+}
+
+/// Response from feedback stats endpoint
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct FeedbackStatsResponse {
+    /// Triple ID
+    pub triple_id: String,
+    
+    /// Count of each signal type received
+    pub signal_counts: std::collections::HashMap<String, usize>,
+    
+    /// Total feedback events mentioning this triple
+    pub total_feedback_count: usize,
+}

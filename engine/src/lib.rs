@@ -19,6 +19,7 @@ pub mod context;     // Context assembly: the read boundary for LLM agents
 pub mod lifecycle;   // Knowledge lifecycle: structural decay + bounded memory
 pub mod query;       // Hybrid retrieval with multi-dimensional fusion scoring
 pub mod resilience;  // Graceful degradation and fallback strategies
+pub mod inference;   // Inference training loop: query patterns feed back to improve retrieval
 
 pub use error::{ValenceError, Result};
 pub use models::{Triple, Node, Source};
@@ -30,3 +31,4 @@ pub use stigmergy::{AccessTracker, CoRetrievalEngine};
 pub use lifecycle::{LifecycleManager, DecayPolicy, MemoryBounds};
 pub use query::{FusionConfig, FusionScorer, RetrievalSignals};
 pub use resilience::{ResilienceManager, DegradationLevel, DegradationWarning};
+pub use inference::{UsageFeedback, FeedbackSignal, FeedbackRecorder, WeightAdjuster, AdjustmentStrategy};

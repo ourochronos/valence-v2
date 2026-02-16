@@ -430,6 +430,28 @@ impl TripleStore for TieredStore {
         Ok(triple)
     }
     
+    async fn update_triple(&self, triple: Triple) -> Result<()> {
+        let triple_id = triple.id;
+        
+        // Update in the tier where it currently resides
+        {
+            let hot_triples = self.hot_triples.read().await;
+            if hot_triples.contains(&triple_id) {
+                // Update in hot tier
+                return self.hot.update_triple(triple).await;
+            }
+        }
+        
+        // Update in cold tier if it exists there
+        #[cfg(feature = "postgres")]
+        if let Some(ref cold) = self.cold {
+            return cold.update_triple(triple).await;
+        }
+        
+        // If not found in either tier, return error
+        Err(anyhow::anyhow!("Triple {} not found in any tier", triple_id))
+    }
+    
     async fn query_triples(&self, pattern: TriplePattern) -> Result<Vec<Triple>> {
         // Query both tiers and merge results
         let mut results = self.hot.query_triples(pattern.clone()).await?;

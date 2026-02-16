@@ -10,11 +10,12 @@ use crate::{
     stigmergy::AccessTracker,
     lifecycle::{LifecycleManager, DecayPolicy, MemoryBounds},
     resilience::ResilienceManager,
+    inference::{FeedbackRecorder, WeightAdjuster, WeightAdjusterConfig},
 };
 
 /// ValenceEngine ties together the triple store, embedding store, access tracker,
-/// lifecycle manager, and resilience manager, providing unified knowledge management
-/// with graceful degradation.
+/// lifecycle manager, resilience manager, and inference training loop components,
+/// providing unified knowledge management with graceful degradation.
 #[derive(Clone)]
 pub struct ValenceEngine {
     /// The triple store (trait object for flexibility)
@@ -29,54 +30,114 @@ pub struct ValenceEngine {
     pub bounds: Arc<MemoryBounds>,
     /// Resilience manager for graceful degradation
     pub resilience: ResilienceManager,
+    /// Feedback recorder for the inference training loop
+    pub feedback_recorder: Option<Arc<FeedbackRecorder>>,
+    /// Weight adjuster for applying feedback to the substrate
+    pub weight_adjuster: Option<Arc<WeightAdjuster>>,
 }
 
 impl ValenceEngine {
     /// Create a new ValenceEngine with empty stores and default lifecycle settings
     pub fn new() -> Self {
+        let store = MemoryStore::new();
+        let store_arc: Arc<dyn TripleStore> = Arc::new(store.clone());
+        let access_tracker = Arc::new(AccessTracker::new());
+        
+        // Initialize feedback recorder
+        let feedback_recorder = Some(Arc::new(FeedbackRecorder::new()));
+        
+        // Initialize weight adjuster with stigmergy integration
+        // Wrap the store in the format weight_adjuster expects
+        let store_boxed: Arc<RwLock<Box<dyn TripleStore>>> = 
+            Arc::new(RwLock::new(Box::new(store)));
+        let weight_adjuster = Some(Arc::new(WeightAdjuster::with_config(
+            store_boxed,
+            WeightAdjusterConfig::default(),
+            Some(access_tracker.clone()),
+        )));
+        
         Self {
-            store: Arc::new(MemoryStore::new()),
+            store: store_arc,
             embeddings: Arc::new(RwLock::new(MemoryEmbeddingStore::new())),
-            access_tracker: Arc::new(AccessTracker::new()),
+            access_tracker,
             lifecycle: Arc::new(LifecycleManager::with_defaults()),
             bounds: Arc::new(MemoryBounds::default()),
             resilience: ResilienceManager::new(),
+            feedback_recorder,
+            weight_adjuster,
         }
     }
     
     /// Create a new ValenceEngine with custom lifecycle policy and bounds
     pub fn with_lifecycle(policy: DecayPolicy, bounds: MemoryBounds) -> Self {
+        let store = MemoryStore::new();
+        let store_arc: Arc<dyn TripleStore> = Arc::new(store.clone());
+        let access_tracker = Arc::new(AccessTracker::new());
+        
+        let feedback_recorder = Some(Arc::new(FeedbackRecorder::new()));
+        let store_boxed: Arc<RwLock<Box<dyn TripleStore>>> = 
+            Arc::new(RwLock::new(Box::new(store)));
+        let weight_adjuster = Some(Arc::new(WeightAdjuster::with_config(
+            store_boxed,
+            WeightAdjusterConfig::default(),
+            Some(access_tracker.clone()),
+        )));
+        
         Self {
-            store: Arc::new(MemoryStore::new()),
+            store: store_arc,
             embeddings: Arc::new(RwLock::new(MemoryEmbeddingStore::new())),
-            access_tracker: Arc::new(AccessTracker::new()),
+            access_tracker,
             lifecycle: Arc::new(LifecycleManager::new(policy)),
             bounds: Arc::new(bounds),
             resilience: ResilienceManager::new(),
+            feedback_recorder,
+            weight_adjuster,
         }
     }
 
     /// Create a ValenceEngine from an existing MemoryStore
     pub fn from_store(store: MemoryStore) -> Self {
+        let store_arc: Arc<dyn TripleStore> = Arc::new(store.clone());
+        let access_tracker = Arc::new(AccessTracker::new());
+        
+        let feedback_recorder = Some(Arc::new(FeedbackRecorder::new()));
+        let store_boxed: Arc<RwLock<Box<dyn TripleStore>>> = 
+            Arc::new(RwLock::new(Box::new(store)));
+        let weight_adjuster = Some(Arc::new(WeightAdjuster::with_config(
+            store_boxed,
+            WeightAdjusterConfig::default(),
+            Some(access_tracker.clone()),
+        )));
+        
         Self {
-            store: Arc::new(store),
+            store: store_arc,
             embeddings: Arc::new(RwLock::new(MemoryEmbeddingStore::new())),
-            access_tracker: Arc::new(AccessTracker::new()),
+            access_tracker,
             lifecycle: Arc::new(LifecycleManager::with_defaults()),
             bounds: Arc::new(MemoryBounds::default()),
             resilience: ResilienceManager::new(),
+            feedback_recorder,
+            weight_adjuster,
         }
     }
 
     /// Create a ValenceEngine from any TripleStore implementation
     pub fn from_triple_store<S: TripleStore + 'static>(store: S) -> Self {
+        let store_arc: Arc<dyn TripleStore> = Arc::new(store);
+        let access_tracker = Arc::new(AccessTracker::new());
+        
+        // Note: weight_adjuster will be None for non-clonable stores
+        // Users should call enable_inference_loop() separately if needed
+        
         Self {
-            store: Arc::new(store),
+            store: store_arc,
             embeddings: Arc::new(RwLock::new(MemoryEmbeddingStore::new())),
-            access_tracker: Arc::new(AccessTracker::new()),
+            access_tracker,
             lifecycle: Arc::new(LifecycleManager::with_defaults()),
             bounds: Arc::new(MemoryBounds::default()),
             resilience: ResilienceManager::new(),
+            feedback_recorder: Some(Arc::new(FeedbackRecorder::new())),
+            weight_adjuster: None,
         }
     }
 
@@ -216,6 +277,16 @@ impl ValenceEngine {
     /// Check lifecycle status (bounds and utilization).
     pub async fn lifecycle_status(&self) -> Result<crate::lifecycle::BoundsStatus> {
         self.bounds.check(&*self.store).await
+    }
+    
+    /// Get a reference to the feedback recorder (if enabled).
+    pub fn feedback_recorder(&self) -> Option<Arc<FeedbackRecorder>> {
+        self.feedback_recorder.clone()
+    }
+    
+    /// Get a reference to the weight adjuster (if enabled).
+    pub fn weight_adjuster(&self) -> Option<Arc<WeightAdjuster>> {
+        self.weight_adjuster.clone()
     }
 }
 

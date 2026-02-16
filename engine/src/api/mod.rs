@@ -67,6 +67,9 @@ pub fn create_router(engine: ValenceEngine) -> Router {
         .route("/stats/lifecycle", get(get_lifecycle_status))
         // Context assembly
         .route("/context", post(assemble_context))
+        // Inference training loop / feedback
+        .route("/inference/feedback", post(submit_feedback))
+        .route("/inference/stats", get(get_feedback_stats))
         // Resilience / degradation
         .route("/resilience/status", get(get_degradation_status))
         .route("/resilience/reset", post(reset_degradation))
@@ -746,6 +749,12 @@ impl From<anyhow::Error> for ApiError {
     }
 }
 
+impl From<crate::ValenceError> for ApiError {
+    fn from(err: crate::ValenceError) -> Self {
+        ApiError::Internal(anyhow::anyhow!(err))
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
         let (status, message) = match self {
@@ -760,6 +769,109 @@ impl IntoResponse for ApiError {
 
         (status, body).into_response()
     }
+}
+
+// ========== Inference Training Loop Endpoints ==========
+
+/// POST /inference/feedback — Submit usage feedback for an assembled context
+async fn submit_feedback(
+    State(state): State<ApiState>,
+    Json(req): Json<SubmitFeedbackRequest>,
+) -> Result<Json<SubmitFeedbackResponse>, ApiError> {
+    use crate::inference::{UsageFeedback, FeedbackSignal, WeightAdjuster};
+    use crate::inference::feedback::TripleFeedback;
+    use uuid::Uuid;
+    use std::str::FromStr;
+
+    // Convert API types to internal types
+    let triple_feedbacks: Result<Vec<TripleFeedback>, ApiError> = req
+        .triples
+        .iter()
+        .map(|tf| {
+            let triple_id = Uuid::from_str(&tf.triple_id)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid triple ID: {}", e)))?;
+            
+            let signal = match tf.signal {
+                FeedbackSignalType::Cited => FeedbackSignal::Cited,
+                FeedbackSignalType::Relevant => FeedbackSignal::Relevant,
+                FeedbackSignalType::Ignored => FeedbackSignal::Ignored,
+                FeedbackSignalType::Misleading => FeedbackSignal::Misleading,
+            };
+
+            Ok(TripleFeedback { triple_id, signal })
+        })
+        .collect();
+
+    let triple_feedbacks = triple_feedbacks?;
+
+    // Create usage feedback
+    let feedback = if let Some(quality) = req.context_quality {
+        UsageFeedback::with_quality(req.context_id, triple_feedbacks, quality)
+    } else {
+        UsageFeedback::new(req.context_id, triple_feedbacks)
+    };
+
+    let feedback_id = feedback.id;
+
+    // Record feedback in the engine's feedback recorder
+    if let Some(recorder) = state.engine.feedback_recorder() {
+        recorder.record(feedback.clone()).await;
+    }
+
+    // Apply feedback via weight adjuster
+    let adjuster = state.engine.weight_adjuster().ok_or_else(|| {
+        ApiError::Internal(anyhow::anyhow!("Weight adjuster not initialized"))
+    })?;
+
+    let summary = adjuster.apply_feedback(&feedback).await?;
+
+    Ok(Json(SubmitFeedbackResponse {
+        feedback_id: feedback_id.to_string(),
+        adjusted_count: summary.success_count(),
+        error_count: summary.error_count(),
+        avg_weight_change: summary.average_weight_change(),
+        stigmergy_updated: summary.stigmergy_updated,
+    }))
+}
+
+/// GET /inference/stats — Get feedback statistics for a triple
+async fn get_feedback_stats(
+    State(state): State<ApiState>,
+    Query(params): Query<FeedbackStatsParams>,
+) -> Result<Json<FeedbackStatsResponse>, ApiError> {
+    use uuid::Uuid;
+    use std::str::FromStr;
+
+    let triple_id = Uuid::from_str(&params.triple_id)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid triple ID: {}", e)))?;
+
+    let recorder = state.engine.feedback_recorder().ok_or_else(|| {
+        ApiError::Internal(anyhow::anyhow!("Feedback recorder not initialized"))
+    })?;
+
+    let stats = recorder.get_triple_stats(triple_id).await;
+
+    // Convert HashMap<FeedbackSignal, usize> to HashMap<String, usize>
+    let signal_counts: std::collections::HashMap<String, usize> = stats
+        .iter()
+        .map(|(signal, count)| {
+            let signal_str = match signal {
+                crate::inference::FeedbackSignal::Cited => "cited",
+                crate::inference::FeedbackSignal::Relevant => "relevant",
+                crate::inference::FeedbackSignal::Ignored => "ignored",
+                crate::inference::FeedbackSignal::Misleading => "misleading",
+            };
+            (signal_str.to_string(), *count)
+        })
+        .collect();
+
+    let total_feedback_count: usize = signal_counts.values().sum();
+
+    Ok(Json(FeedbackStatsResponse {
+        triple_id: params.triple_id,
+        signal_counts,
+        total_feedback_count,
+    }))
 }
 
 #[cfg(test)]
