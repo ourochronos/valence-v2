@@ -645,21 +645,8 @@ async fn test_post_evict_negative_threshold() {
         .await
         .unwrap();
 
-    // Should succeed and evict nothing (weights are never negative)
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(body["evicted_count"], 0);
-
-    // Verify triple still exists
-    let stats_response = client
-        .get(format!("{}/stats", base_url))
-        .send()
-        .await
-        .unwrap();
-
-    let stats_body: serde_json::Value = stats_response.json().await.unwrap();
-    assert_eq!(stats_body["triple_count"], 1);
+    // Should be rejected by input validation (negative threshold)
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -715,10 +702,8 @@ async fn test_get_neighbors_depth_zero() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(body["triple_count"], 0); // Depth 0 should return nothing
+    // Depth 0 is rejected by validation (must be >= 1)
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -783,7 +768,7 @@ async fn test_decay_factor_greater_than_one() {
         .await
         .unwrap();
 
-    // Decay with factor > 1.0 (increases weights instead of decreasing)
+    // Decay with factor > 1.0 should be rejected by validation
     let response = client
         .post(format!("{}/maintenance/decay", base_url))
         .json(&json!({
@@ -794,18 +779,7 @@ async fn test_decay_factor_greater_than_one() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::OK);
-
-    // Check that weight increased
-    let triples_response = client
-        .get(format!("{}/triples", base_url))
-        .send()
-        .await
-        .unwrap();
-
-    let body: serde_json::Value = triples_response.json().await.unwrap();
-    let triples = body["triples"].as_array().unwrap();
-    assert_eq!(triples[0]["weight"], 2.0);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
