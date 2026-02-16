@@ -94,7 +94,6 @@ impl ValenceEngine {
 
         Ok(count)
     }
-
     /// Run a decay + eviction cycle
     ///
     /// This applies exponential decay to all triple weights, then removes
