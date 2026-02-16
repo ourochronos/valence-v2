@@ -7,6 +7,7 @@
 pub mod error;       // Error types
 pub mod models;
 pub mod storage;
+pub mod tiered_store; // Cold/warm split: hot (memory) + cold (postgres) with promotion/demotion
 pub mod graph;       // In-memory graph algorithms (petgraph)
 pub mod api;         // HTTP server for MCP
 pub mod embeddings;  // Topology-derived embeddings
@@ -21,6 +22,7 @@ pub mod query;       // Hybrid retrieval with multi-dimensional fusion scoring
 pub use error::{ValenceError, Result};
 pub use models::{Triple, Node, Source};
 pub use storage::TripleStore;
+pub use tiered_store::{TieredStore, TieredConfig, PromotionPolicy, DemotionPolicy, Tier};
 pub use graph::{GraphView, ConfidenceScore};
 pub use engine::ValenceEngine;
 pub use stigmergy::{AccessTracker, CoRetrievalEngine};
