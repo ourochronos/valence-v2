@@ -58,8 +58,7 @@ pub fn create_router(engine: ValenceEngine) -> Router {
         .route("/maintenance/decay", post(trigger_decay))
         .route("/maintenance/evict", post(trigger_evict))
         .route("/maintenance/recompute-embeddings", post(recompute_embeddings))
-        // TODO: Implement stigmergy reinforcement endpoint
-        // .route("/maintenance/reinforce", post(trigger_stigmergy_reinforcement))
+        .route("/maintenance/reinforce", post(trigger_stigmergy_reinforcement))
         .with_state(state)
 }
 
@@ -476,15 +475,14 @@ async fn recompute_embeddings(
     Ok(Json(RecomputeEmbeddingsResponse { embedding_count }))
 }
 
-// TODO: Implement stigmergy reinforcement - currently disabled due to missing implementation
-// /// POST /maintenance/reinforce — Create edges based on co-access patterns (stigmergy)
-// async fn trigger_stigmergy_reinforcement(
-//     State(state): State<ApiState>,
-// ) -> Result<Json<ReinforceResponse>, ApiError> {
-//     let edges_created = state.engine.run_stigmergy_reinforcement().await?;
-//
-//     Ok(Json(ReinforceResponse { edges_created }))
-// }
+/// POST /maintenance/reinforce — Create edges based on co-access patterns (stigmergy)
+async fn trigger_stigmergy_reinforcement(
+    State(state): State<ApiState>,
+) -> Result<Json<ReinforceResponse>, ApiError> {
+    let edges_created = state.engine.run_stigmergy_reinforcement().await?;
+
+    Ok(Json(ReinforceResponse { edges_created }))
+}
 
 /// API error types
 #[derive(Debug)]

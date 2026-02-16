@@ -186,3 +186,10 @@ fn default_dimensions() -> usize {
 pub struct RecomputeEmbeddingsResponse {
     pub embedding_count: usize,
 }
+
+/// Response from stigmergy reinforcement endpoint
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ReinforceResponse {
+    /// Number of co-retrieval edges created
+    pub edges_created: u64,
+}

@@ -7,9 +7,10 @@ use anyhow::{Result, Context};
 use crate::{
     storage::{MemoryStore, TripleStore},
     embeddings::{EmbeddingStore, memory::MemoryEmbeddingStore, spectral},
+    stigmergy::AccessTracker,
 };
 
-/// ValenceEngine ties together the triple store and embedding store,
+/// ValenceEngine ties together the triple store, embedding store, and access tracker,
 /// providing unified lifecycle management.
 #[derive(Clone)]
 pub struct ValenceEngine {
@@ -17,6 +18,8 @@ pub struct ValenceEngine {
     pub store: Arc<dyn TripleStore>,
     /// The embedding store (wrapped in RwLock for interior mutability)
     pub embeddings: Arc<RwLock<MemoryEmbeddingStore>>,
+    /// The access tracker for stigmergy
+    pub access_tracker: Arc<AccessTracker>,
 }
 
 impl ValenceEngine {
@@ -25,6 +28,7 @@ impl ValenceEngine {
         Self {
             store: Arc::new(MemoryStore::new()),
             embeddings: Arc::new(RwLock::new(MemoryEmbeddingStore::new())),
+            access_tracker: Arc::new(AccessTracker::new()),
         }
     }
 
@@ -33,6 +37,7 @@ impl ValenceEngine {
         Self {
             store: Arc::new(store),
             embeddings: Arc::new(RwLock::new(MemoryEmbeddingStore::new())),
+            access_tracker: Arc::new(AccessTracker::new()),
         }
     }
 
@@ -41,6 +46,7 @@ impl ValenceEngine {
         Self {
             store: Arc::new(store),
             embeddings: Arc::new(RwLock::new(MemoryEmbeddingStore::new())),
+            access_tracker: Arc::new(AccessTracker::new()),
         }
     }
 
@@ -95,6 +101,40 @@ impl ValenceEngine {
     pub async fn has_embeddings(&self) -> bool {
         let embeddings = self.embeddings.read().await;
         !embeddings.is_empty()
+    }
+
+    /// Run stigmergy reinforcement: create edges based on co-access patterns.
+    ///
+    /// This creates structural edges between frequently co-accessed triples,
+    /// making the graph topology reflect usage patterns.
+    ///
+    /// Returns the number of new edges created.
+    pub async fn run_stigmergy_reinforcement(&self) -> Result<u64> {
+        use crate::stigmergy::CoRetrievalEngine;
+
+        let engine = CoRetrievalEngine::new(
+            self.store.clone(),
+            self.access_tracker.clone(),
+        );
+
+        engine.reinforce().await
+    }
+
+    /// Run a full stigmergy maintenance cycle: reinforce then decay.
+    ///
+    /// This creates edges based on current frequent co-access patterns,
+    /// then applies decay to the access tracker.
+    ///
+    /// Returns (edges_created, events_decayed).
+    pub async fn run_stigmergy_maintenance(&self) -> Result<(u64, usize)> {
+        use crate::stigmergy::CoRetrievalEngine;
+
+        let engine = CoRetrievalEngine::new(
+            self.store.clone(),
+            self.access_tracker.clone(),
+        );
+
+        engine.run_maintenance_cycle().await
     }
 }
 
@@ -204,5 +244,74 @@ mod tests {
         // Both should have embeddings (Arc sharing)
         assert!(engine.has_embeddings().await);
         assert!(engine2.has_embeddings().await);
+    }
+
+    #[tokio::test]
+    async fn test_stigmergy_integration() {
+        let engine = ValenceEngine::new();
+
+        // Create some triples
+        let alice = engine.store.find_or_create_node("Alice").await.unwrap();
+        let bob = engine.store.find_or_create_node("Bob").await.unwrap();
+        let charlie = engine.store.find_or_create_node("Charlie").await.unwrap();
+        let diana = engine.store.find_or_create_node("Diana").await.unwrap();
+
+        let t1 = Triple::new(alice.id, "knows", bob.id);
+        let t2 = Triple::new(charlie.id, "knows", diana.id);
+
+        let id1 = engine.store.insert_triple(t1).await.unwrap();
+        let id2 = engine.store.insert_triple(t2).await.unwrap();
+
+        // Record co-accesses (threshold is 3 by default)
+        for _ in 0..5 {
+            engine.access_tracker
+                .record_access(&[id1, id2], "test_query")
+                .await;
+        }
+
+        // Initially just 2 triples
+        assert_eq!(engine.store.count_triples().await.unwrap(), 2);
+
+        // Run stigmergy reinforcement
+        let created = engine.run_stigmergy_reinforcement().await.unwrap();
+
+        // Should create 2 co-retrieval edges
+        assert_eq!(created, 2);
+
+        // Now should have 4 triples total (original 2 + 2 co-retrieval edges)
+        assert_eq!(engine.store.count_triples().await.unwrap(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_stigmergy_maintenance_cycle() {
+        let engine = ValenceEngine::new();
+
+        // Create triples
+        let alice = engine.store.find_or_create_node("Alice").await.unwrap();
+        let bob = engine.store.find_or_create_node("Bob").await.unwrap();
+        let charlie = engine.store.find_or_create_node("Charlie").await.unwrap();
+        let diana = engine.store.find_or_create_node("Diana").await.unwrap();
+
+        let t1 = Triple::new(alice.id, "knows", bob.id);
+        let t2 = Triple::new(charlie.id, "knows", diana.id);
+
+        let id1 = engine.store.insert_triple(t1).await.unwrap();
+        let id2 = engine.store.insert_triple(t2).await.unwrap();
+
+        // Record co-accesses
+        for i in 0..5 {
+            engine.access_tracker
+                .record_access(&[id1, id2], &format!("query_{}", i))
+                .await;
+        }
+
+        // Run full maintenance cycle
+        let (created, decayed) = engine.run_stigmergy_maintenance().await.unwrap();
+
+        // Should create 2 co-retrieval edges
+        assert_eq!(created, 2);
+
+        // Events don't decay unless they're old (24 hours by default)
+        assert_eq!(decayed, 0);
     }
 }

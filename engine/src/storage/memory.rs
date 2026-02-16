@@ -554,11 +554,9 @@ mod tests {
         let triple = Triple::new(a.id, "rel", b.id);
         store.insert_triple(triple.clone()).await.unwrap();
         
-        // Decay with factor > 1.0 (weights will increase, which might not be desired)
-        store.decay(1.5, 0.0).await.unwrap();
-        
-        let t = store.get_triple(triple.id).await.unwrap().unwrap();
-        assert_eq!(t.weight, 1.5);
+        // Decay with factor > 1.0 should be rejected (validation added in code review)
+        let result = store.decay(1.5, 0.0).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
