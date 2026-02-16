@@ -58,6 +58,8 @@ pub fn create_router(engine: ValenceEngine) -> Router {
         .route("/maintenance/decay", post(trigger_decay))
         .route("/maintenance/evict", post(trigger_evict))
         .route("/maintenance/recompute-embeddings", post(recompute_embeddings))
+        // TODO: Implement stigmergy reinforcement endpoint
+        // .route("/maintenance/reinforce", post(trigger_stigmergy_reinforcement))
         .with_state(state)
 }
 
@@ -157,11 +159,22 @@ async fn query_triples(
 
     let triples = state.engine.store.query_triples(pattern).await?;
 
+    // Record access for stigmergy (track which triples were retrieved together)
+    if !triples.is_empty() {
+        let triple_ids: Vec<_> = triples.iter().map(|t| t.id).collect();
+        let context = format!("query_{}", uuid::Uuid::new_v4());
+        state.engine.access_tracker
+            .record_access(&triple_ids, &context)
+            .await;
+    }
+
     // Convert to response format
     let mut triple_responses = Vec::new();
     for triple in triples {
-        let subject_node = state.engine.store.get_node(triple.subject).await?.unwrap();
-        let object_node = state.engine.store.get_node(triple.object).await?.unwrap();
+        let subject_node = state.engine.store.get_node(triple.subject).await?
+            .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("Subject node not found: {:?}", triple.subject)))?;
+        let object_node = state.engine.store.get_node(triple.object).await?
+            .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("Object node not found: {:?}", triple.object)))?;
 
         let sources = if params.include_sources.unwrap_or(false) {
             let sources = state.engine.store.get_sources_for_triple(triple.id).await?;
@@ -224,6 +237,14 @@ async fn get_neighbors(
     };
 
     let depth = params.depth.unwrap_or(1);
+    
+    // Validate depth parameter (prevent pathological queries)
+    if depth == 0 {
+        return Err(ApiError::BadRequest("Depth must be at least 1".to_string()));
+    }
+    if depth > 10 {
+        return Err(ApiError::BadRequest("Depth cannot exceed 10 (too expensive)".to_string()));
+    }
     let triples = state.engine.store.neighbors(node_id, depth).await?;
 
     // Convert to response format
@@ -293,15 +314,18 @@ async fn get_stats(State(state): State<ApiState>) -> Result<Json<StatsResponse>,
     let triple_count = state.engine.store.count_triples().await?;
     let node_count = state.engine.store.count_nodes().await?;
 
-    // Calculate average weight
+    // Calculate average weight - sample up to 1000 triples to avoid OOM on large graphs
     let pattern = TriplePattern {
         subject: None,
         predicate: None,
         object: None,
     };
     let triples = state.engine.store.query_triples(pattern).await?;
-    let avg_weight = if !triples.is_empty() {
-        triples.iter().map(|t| t.weight).sum::<f64>() / triples.len() as f64
+    
+    // For large graphs, sample instead of loading everything
+    let sample_size = triples.len().min(1000);
+    let avg_weight = if sample_size > 0 {
+        triples.iter().take(sample_size).map(|t| t.weight).sum::<f64>() / sample_size as f64
     } else {
         0.0
     };
@@ -318,6 +342,17 @@ async fn trigger_decay(
     State(state): State<ApiState>,
     Json(req): Json<DecayRequest>,
 ) -> Result<Json<DecayResponse>, ApiError> {
+    // Validate decay parameters
+    if req.factor < 0.0 || req.factor > 1.0 {
+        return Err(ApiError::BadRequest("Decay factor must be between 0.0 and 1.0".to_string()));
+    }
+    if req.min_weight < 0.0 {
+        return Err(ApiError::BadRequest("Min weight cannot be negative".to_string()));
+    }
+    if req.min_weight > 1.0 {
+        return Err(ApiError::BadRequest("Min weight cannot exceed 1.0".to_string()));
+    }
+    
     let affected_count = state.engine.store.decay(req.factor, req.min_weight).await?;
 
     Ok(Json(DecayResponse { affected_count }))
@@ -328,6 +363,11 @@ async fn trigger_evict(
     State(state): State<ApiState>,
     Json(req): Json<EvictRequest>,
 ) -> Result<Json<EvictResponse>, ApiError> {
+    // Validate threshold parameter
+    if req.threshold < 0.0 {
+        return Err(ApiError::BadRequest("Eviction threshold cannot be negative".to_string()));
+    }
+    
     let evicted_count = state.engine.store.evict_below_weight(req.threshold).await?;
 
     Ok(Json(EvictResponse { evicted_count }))
@@ -338,6 +378,14 @@ async fn search(
     State(state): State<ApiState>,
     Json(req): Json<SearchRequest>,
 ) -> Result<Json<SearchResponse>, ApiError> {
+    // Validate k parameter (prevent pathological queries)
+    if req.k == 0 {
+        return Err(ApiError::BadRequest("k must be at least 1".to_string()));
+    }
+    if req.k > 1000 {
+        return Err(ApiError::BadRequest("k cannot exceed 1000 (too expensive)".to_string()));
+    }
+    
     // Find the query node by value
     let query_node = state
         .engine
@@ -415,10 +463,28 @@ async fn recompute_embeddings(
     State(state): State<ApiState>,
     Json(req): Json<RecomputeEmbeddingsRequest>,
 ) -> Result<Json<RecomputeEmbeddingsResponse>, ApiError> {
+    // Validate dimensions parameter
+    if req.dimensions == 0 {
+        return Err(ApiError::BadRequest("Dimensions must be at least 1".to_string()));
+    }
+    if req.dimensions > 512 {
+        return Err(ApiError::BadRequest("Dimensions cannot exceed 512 (too expensive)".to_string()));
+    }
+    
     let embedding_count = state.engine.recompute_embeddings(req.dimensions).await?;
 
     Ok(Json(RecomputeEmbeddingsResponse { embedding_count }))
 }
+
+// TODO: Implement stigmergy reinforcement - currently disabled due to missing implementation
+// /// POST /maintenance/reinforce — Create edges based on co-access patterns (stigmergy)
+// async fn trigger_stigmergy_reinforcement(
+//     State(state): State<ApiState>,
+// ) -> Result<Json<ReinforceResponse>, ApiError> {
+//     let edges_created = state.engine.run_stigmergy_reinforcement().await?;
+//
+//     Ok(Json(ReinforceResponse { edges_created }))
+// }
 
 /// API error types
 #[derive(Debug)]

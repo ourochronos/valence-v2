@@ -3,6 +3,8 @@
 //! HTTP server exposing the triple store API.
 
 use anyhow::Result;
+#[cfg(feature = "postgres")]
+use anyhow::Context;
 use clap::Parser;
 use std::net::SocketAddr;
 use tokio::signal;

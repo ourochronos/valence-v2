@@ -46,20 +46,31 @@ impl TripleStore for MemoryStore {
         let id = node.id;
         let value = node.value.clone();
         
-        self.nodes.write().unwrap().insert(id, node);
-        self.node_value_index.write().unwrap().insert(value, id);
+        self.nodes.write()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire write lock on nodes: {}", e))?
+            .insert(id, node);
+        self.node_value_index.write()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire write lock on node_value_index: {}", e))?
+            .insert(value, id);
         
         Ok(id)
     }
 
     async fn get_node(&self, id: NodeId) -> Result<Option<Node>> {
-        Ok(self.nodes.read().unwrap().get(&id).cloned())
+        let nodes = self.nodes.read()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire read lock on nodes: {}", e))?;
+        Ok(nodes.get(&id).cloned())
     }
 
     async fn find_node_by_value(&self, value: &str) -> Result<Option<Node>> {
-        let node_id = self.node_value_index.read().unwrap().get(value).copied();
+        let node_value_index = self.node_value_index.read()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire read lock on node_value_index: {}", e))?;
+        let node_id = node_value_index.get(value).copied();
+        
         if let Some(id) = node_id {
-            Ok(self.nodes.read().unwrap().get(&id).cloned())
+            let nodes = self.nodes.read()
+                .map_err(|e| anyhow::anyhow!("Failed to acquire read lock on nodes: {}", e))?;
+            Ok(nodes.get(&id).cloned())
         } else {
             Ok(None)
         }
@@ -77,16 +88,21 @@ impl TripleStore for MemoryStore {
 
     async fn insert_triple(&self, triple: Triple) -> Result<TripleId> {
         let id = triple.id;
-        self.triples.write().unwrap().insert(id, triple);
+        self.triples.write()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire write lock on triples: {}", e))?
+            .insert(id, triple);
         Ok(id)
     }
 
     async fn get_triple(&self, id: TripleId) -> Result<Option<Triple>> {
-        Ok(self.triples.read().unwrap().get(&id).cloned())
+        let triples = self.triples.read()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire read lock on triples: {}", e))?;
+        Ok(triples.get(&id).cloned())
     }
 
     async fn query_triples(&self, pattern: TriplePattern) -> Result<Vec<Triple>> {
-        let triples = self.triples.read().unwrap();
+        let triples = self.triples.read()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire read lock on triples: {}", e))?;
         let results: Vec<Triple> = triples
             .values()
             .filter(|t| {
@@ -113,7 +129,8 @@ impl TripleStore for MemoryStore {
     }
 
     async fn touch_triple(&self, id: TripleId) -> Result<()> {
-        let mut triples = self.triples.write().unwrap();
+        let mut triples = self.triples.write()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire write lock on triples: {}", e))?;
         if let Some(triple) = triples.get_mut(&id) {
             triple.touch();
         }
@@ -121,9 +138,13 @@ impl TripleStore for MemoryStore {
     }
 
     async fn delete_triple(&self, id: TripleId) -> Result<()> {
-        self.triples.write().unwrap().remove(&id);
+        self.triples.write()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire write lock on triples: {}", e))?
+            .remove(&id);
         // Also clean up source mappings
-        self.triple_sources.write().unwrap().remove(&id);
+        self.triple_sources.write()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire write lock on triple_sources: {}", e))?
+            .remove(&id);
         Ok(())
     }
 
@@ -131,10 +152,13 @@ impl TripleStore for MemoryStore {
         let id = source.id;
         let triple_ids = source.triple_ids.clone();
         
-        self.sources.write().unwrap().insert(id, source);
+        self.sources.write()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire write lock on sources: {}", e))?
+            .insert(id, source);
         
         // Update reverse index: triple -> sources
-        let mut triple_sources = self.triple_sources.write().unwrap();
+        let mut triple_sources = self.triple_sources.write()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire write lock on triple_sources: {}", e))?;
         for triple_id in triple_ids {
             triple_sources
                 .entry(triple_id)
@@ -146,10 +170,12 @@ impl TripleStore for MemoryStore {
     }
 
     async fn get_sources_for_triple(&self, triple_id: TripleId) -> Result<Vec<Source>> {
-        let triple_sources = self.triple_sources.read().unwrap();
+        let triple_sources = self.triple_sources.read()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire read lock on triple_sources: {}", e))?;
         let source_ids = triple_sources.get(&triple_id).cloned().unwrap_or_default();
         
-        let sources_map = self.sources.read().unwrap();
+        let sources_map = self.sources.read()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire read lock on sources: {}", e))?;
         let sources: Vec<Source> = source_ids
             .iter()
             .filter_map(|id| sources_map.get(id).cloned())
@@ -162,8 +188,14 @@ impl TripleStore for MemoryStore {
         if depth == 0 {
             return Ok(Vec::new());
         }
+        
+        // Validate depth to prevent memory exhaustion
+        if depth > 10 {
+            anyhow::bail!("Depth cannot exceed 10 (too expensive)");
+        }
 
-        let triples = self.triples.read().unwrap();
+        let triples = self.triples.read()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire read lock on triples: {}", e))?;
         
         // Find all triples where node_id is subject or object
         let mut result: Vec<Triple> = triples
@@ -206,15 +238,28 @@ impl TripleStore for MemoryStore {
     }
 
     async fn count_triples(&self) -> Result<u64> {
-        Ok(self.triples.read().unwrap().len() as u64)
+        let triples = self.triples.read()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire read lock on triples: {}", e))?;
+        Ok(triples.len() as u64)
     }
 
     async fn count_nodes(&self) -> Result<u64> {
-        Ok(self.nodes.read().unwrap().len() as u64)
+        let nodes = self.nodes.read()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire read lock on nodes: {}", e))?;
+        Ok(nodes.len() as u64)
     }
 
     async fn decay(&self, factor: f64, min_weight: f64) -> Result<u64> {
-        let mut triples = self.triples.write().unwrap();
+        // Validate parameters
+        if factor < 0.0 || factor > 1.0 {
+            anyhow::bail!("Decay factor must be between 0.0 and 1.0");
+        }
+        if min_weight < 0.0 {
+            anyhow::bail!("Min weight cannot be negative");
+        }
+        
+        let mut triples = self.triples.write()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire write lock on triples: {}", e))?;
         let mut decayed_count = 0u64;
         
         for triple in triples.values_mut() {
@@ -229,7 +274,13 @@ impl TripleStore for MemoryStore {
     }
 
     async fn evict_below_weight(&self, threshold: f64) -> Result<u64> {
-        let mut triples = self.triples.write().unwrap();
+        // Validate threshold
+        if threshold < 0.0 {
+            anyhow::bail!("Eviction threshold cannot be negative");
+        }
+        
+        let mut triples = self.triples.write()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire write lock on triples: {}", e))?;
         let initial_count = triples.len();
         
         triples.retain(|_, triple| triple.weight >= threshold);
