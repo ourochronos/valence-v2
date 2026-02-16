@@ -10,8 +10,9 @@ Valence v2 is a knowledge engine that stores information as `(subject, predicate
 
 ```
 ┌─────────────────────────────────────┐
-│           HTTP API (axum)           │
+│    HTTP API (axum) | MCP (stdio)   │
 │  /triples /search /stats /maint    │
+│  7 tools for OpenClaw integration  │
 ├─────────────────────────────────────┤
 │          ValenceEngine              │
 │   ┌───────────┐  ┌──────────────┐  │
@@ -39,7 +40,15 @@ Valence v2 is a knowledge engine that stores information as `(subject, predicate
 
 ```bash
 cd engine
-cargo run -- --port 8421
+
+# HTTP server (default)
+cargo run -- --mode http --port 8421
+
+# MCP stdio server (for Claude/OpenClaw)
+cargo run -- --mode mcp
+
+# Both HTTP + MCP
+cargo run -- --mode both --port 8421
 ```
 
 ### With PostgreSQL
@@ -57,6 +66,8 @@ docker-compose up -d
 
 ## API
 
+### HTTP Endpoints
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/triples` | Insert triples with provenance |
@@ -68,6 +79,20 @@ docker-compose up -d
 | POST | `/maintenance/decay` | Trigger weight decay |
 | POST | `/maintenance/evict` | Garbage collection |
 | POST | `/maintenance/recompute-embeddings` | Regenerate spectral embeddings |
+
+### MCP Tools (for Claude/OpenClaw)
+
+| Tool | Description |
+|------|-------------|
+| `insert_triples` | Insert triples with source provenance |
+| `query_triples` | Pattern-match query (S/P/O wildcards) |
+| `search` | Semantic search via topology embeddings |
+| `neighbors` | K-hop subgraph traversal |
+| `sources` | Get provenance for a triple |
+| `stats` | Engine statistics |
+| `maintain` | Run decay/eviction/recompute cycle |
+
+See [`docs/mcp-integration.md`](docs/mcp-integration.md) for MCP setup and OpenClaw plugin installation.
 
 ## Design Philosophy
 
@@ -94,6 +119,7 @@ engine/
 │   ├── api/          # HTTP endpoints (axum)
 │   ├── embeddings/   # Spectral embeddings, embedding store
 │   ├── graph/        # Algorithms, confidence, graph view
+│   ├── mcp/          # MCP server (stdio transport)
 │   ├── models/       # Triple, Node, Source types
 │   ├── storage/      # TripleStore trait, MemoryStore, PgStore
 │   ├── engine.rs     # ValenceEngine (unified lifecycle)
@@ -101,8 +127,11 @@ engine/
 │   └── main.rs       # Binary entrypoint
 ├── tests/
 │   └── integration.rs
+plugin/
+└── openclaw.plugin.json  # OpenClaw MCP plugin manifest
 docs/
 ├── api-design.md
+├── mcp-integration.md     # MCP server documentation
 ├── bricks-architecture.md
 ├── satellite-repos.md
 ├── requirements.md
