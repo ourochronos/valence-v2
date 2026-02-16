@@ -284,6 +284,15 @@ impl<'a> ContextAssembler<'a> {
             }
         }
 
+        // Always include the query node, even if there are no triples
+        if !seen_nodes.contains(&query_node.id) && nodes.len() < config.max_nodes {
+            nodes.push(NodeInfo {
+                node_id: query_node.id,
+                value: query_node.value.clone(),
+                degree: *node_degrees.get(&query_node.value).unwrap_or(&0),
+            });
+        }
+
         // Step 4: Format as structured text
         let formatted = self.format_context(&scored_triples, &nodes, &config)?;
 

@@ -264,9 +264,8 @@ impl TripleStore for MemoryStore {
         
         for triple in triples.values_mut() {
             triple.weight *= factor;
-            if triple.weight < min_weight {
-                triple.weight = min_weight;
-            }
+            // Don't clamp to min_weight - let it decay naturally
+            // evict_below_weight() will handle removal later
             decayed_count += 1;
         }
         

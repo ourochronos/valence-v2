@@ -130,8 +130,15 @@ impl MemoryBounds {
     pub async fn enforce(&self, store: &dyn TripleStore) -> Result<EnforceResult> {
         let status = self.check(store).await?;
         
-        // If neither limit is exceeded, nothing to do
-        if !status.triples_exceeded && !status.nodes_exceeded {
+        // Calculate target counts
+        let target_triples = (self.max_triples as f64 * self.target_utilization) as u64;
+        let target_nodes = (self.max_nodes as f64 * self.target_utilization) as u64;
+        
+        // Check if we're above target utilization (not just hard limits)
+        let above_target = status.current_triples > target_triples || status.current_nodes > target_nodes;
+        
+        // If neither limit is exceeded and we're at or below target, nothing to do
+        if !status.triples_exceeded && !status.nodes_exceeded && !above_target {
             return Ok(EnforceResult {
                 triples_evicted: 0,
                 nodes_removed: 0,
@@ -141,18 +148,17 @@ impl MemoryBounds {
             });
         }
         
-        // Calculate target counts
-        let target_triples = (self.max_triples as f64 * self.target_utilization) as u64;
-        let target_nodes = (self.max_nodes as f64 * self.target_utilization) as u64;
-        
         // Determine how many triples to evict
-        let triples_to_evict = if status.triples_exceeded {
+        let triples_to_evict = if status.triples_exceeded || status.current_triples > target_triples {
+            // Triples above limit or target - evict down to target
             status.current_triples.saturating_sub(target_triples)
-        } else {
+        } else if status.nodes_exceeded || status.current_nodes > target_nodes {
             // Node limit exceeded - estimate triples to remove based on node target
             // Rough heuristic: each triple connects 2 nodes on average
             let nodes_to_remove = status.current_nodes.saturating_sub(target_nodes);
             nodes_to_remove / 2
+        } else {
+            0
         };
         
         if triples_to_evict == 0 {
