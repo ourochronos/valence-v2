@@ -5,34 +5,41 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
-    models::{Source, SourceType, Triple},
+    engine::ValenceEngine,
+    embeddings::EmbeddingStore,
+    graph::{GraphView, DynamicConfidence},
+    models::{Source, Triple},
     storage::{MemoryStore, TriplePattern, TripleStore},
 };
 
 mod types;
 pub use types::*;
 
-/// API server state - uses concrete MemoryStore for simplicity
+/// API server state - uses ValenceEngine
 #[derive(Clone)]
 pub struct ApiState {
-    pub store: Arc<MemoryStore>,
+    pub engine: ValenceEngine,
 }
 
 impl ApiState {
-    pub fn new(store: MemoryStore) -> Self {
+    pub fn new(engine: ValenceEngine) -> Self {
+        Self { engine }
+    }
+
+    /// Backward compatibility: create from a MemoryStore
+    pub fn from_store(store: MemoryStore) -> Self {
         Self {
-            store: Arc::new(store),
+            engine: ValenceEngine::from_store(store),
         }
     }
 }
 
 /// Create the API router with all endpoints
-pub fn create_router(store: MemoryStore) -> Router {
-    let state = ApiState::new(store);
+pub fn create_router(engine: ValenceEngine) -> Router {
+    let state = ApiState::new(engine);
 
     Router::new()
         // Triple operations
@@ -41,11 +48,14 @@ pub fn create_router(store: MemoryStore) -> Router {
         .route("/triples/{id}/sources", get(get_triple_sources))
         // Node operations
         .route("/nodes/{node}/neighbors", get(get_neighbors))
+        // Search
+        .route("/search", post(search))
         // Statistics
         .route("/stats", get(get_stats))
         // Maintenance
         .route("/maintenance/decay", post(trigger_decay))
         .route("/maintenance/evict", post(trigger_evict))
+        .route("/maintenance/recompute-embeddings", post(recompute_embeddings))
         .with_state(state)
 }
 
@@ -60,17 +70,19 @@ async fn insert_triples(
     for triple_req in &req.triples {
         // Find or create subject and object nodes
         let subject_node = state
+            .engine
             .store
             .find_or_create_node(&triple_req.subject)
             .await?;
         let object_node = state
+            .engine
             .store
             .find_or_create_node(&triple_req.object)
             .await?;
 
         // Create and insert triple
         let triple = Triple::new(subject_node.id, &triple_req.predicate, object_node.id);
-        let triple_id = state.store.insert_triple(triple).await?;
+        let triple_id = state.engine.store.insert_triple(triple).await?;
         triple_ids.push(triple_id);
     }
 
@@ -82,7 +94,7 @@ async fn insert_triples(
         } else {
             source
         };
-        let source_id = state.store.insert_source(source).await?;
+        let source_id = state.engine.store.insert_source(source).await?;
         Some(source_id)
     } else {
         None
@@ -102,6 +114,7 @@ async fn query_triples(
     // Resolve node values to IDs
     let subject_id = if let Some(ref subject_value) = params.subject {
         state
+            .engine
             .store
             .find_node_by_value(subject_value)
             .await?
@@ -112,6 +125,7 @@ async fn query_triples(
 
     let object_id = if let Some(ref object_value) = params.object {
         state
+            .engine
             .store
             .find_node_by_value(object_value)
             .await?
@@ -127,16 +141,16 @@ async fn query_triples(
         object: object_id,
     };
 
-    let triples = state.store.query_triples(pattern).await?;
+    let triples = state.engine.store.query_triples(pattern).await?;
 
     // Convert to response format
     let mut triple_responses = Vec::new();
     for triple in triples {
-        let subject_node = state.store.get_node(triple.subject).await?.unwrap();
-        let object_node = state.store.get_node(triple.object).await?.unwrap();
+        let subject_node = state.engine.store.get_node(triple.subject).await?.unwrap();
+        let object_node = state.engine.store.get_node(triple.object).await?.unwrap();
 
         let sources = if params.include_sources.unwrap_or(false) {
-            let sources = state.store.get_sources_for_triple(triple.id).await?;
+            let sources = state.engine.store.get_sources_for_triple(triple.id).await?;
             Some(
                 sources
                     .into_iter()
@@ -187,6 +201,7 @@ async fn get_neighbors(
         uuid
     } else {
         state
+            .engine
             .store
             .find_node_by_value(&node)
             .await?
@@ -195,15 +210,15 @@ async fn get_neighbors(
     };
 
     let depth = params.depth.unwrap_or(1);
-    let triples = state.store.neighbors(node_id, depth).await?;
+    let triples = state.engine.store.neighbors(node_id, depth).await?;
 
     // Convert to response format
     let mut triple_responses = Vec::new();
     let mut unique_nodes = std::collections::HashSet::new();
 
     for triple in &triples {
-        let subject_node = state.store.get_node(triple.subject).await?.unwrap();
-        let object_node = state.store.get_node(triple.object).await?.unwrap();
+        let subject_node = state.engine.store.get_node(triple.subject).await?.unwrap();
+        let object_node = state.engine.store.get_node(triple.object).await?.unwrap();
 
         unique_nodes.insert(triple.subject);
         unique_nodes.insert(triple.object);
@@ -242,7 +257,7 @@ async fn get_triple_sources(
     let triple_id = Uuid::parse_str(&id)
         .map_err(|_| ApiError::BadRequest(format!("Invalid triple ID: {}", id)))?;
 
-    let sources = state.store.get_sources_for_triple(triple_id).await?;
+    let sources = state.engine.store.get_sources_for_triple(triple_id).await?;
 
     let source_responses: Vec<SourceResponse> = sources
         .into_iter()
@@ -261,8 +276,8 @@ async fn get_triple_sources(
 
 /// GET /stats — Get engine statistics
 async fn get_stats(State(state): State<ApiState>) -> Result<Json<StatsResponse>, ApiError> {
-    let triple_count = state.store.count_triples().await?;
-    let node_count = state.store.count_nodes().await?;
+    let triple_count = state.engine.store.count_triples().await?;
+    let node_count = state.engine.store.count_nodes().await?;
 
     // Calculate average weight
     let pattern = TriplePattern {
@@ -270,7 +285,7 @@ async fn get_stats(State(state): State<ApiState>) -> Result<Json<StatsResponse>,
         predicate: None,
         object: None,
     };
-    let triples = state.store.query_triples(pattern).await?;
+    let triples = state.engine.store.query_triples(pattern).await?;
     let avg_weight = if !triples.is_empty() {
         triples.iter().map(|t| t.weight).sum::<f64>() / triples.len() as f64
     } else {
@@ -289,7 +304,7 @@ async fn trigger_decay(
     State(state): State<ApiState>,
     Json(req): Json<DecayRequest>,
 ) -> Result<Json<DecayResponse>, ApiError> {
-    let affected_count = state.store.decay(req.factor, req.min_weight).await?;
+    let affected_count = state.engine.store.decay(req.factor, req.min_weight).await?;
 
     Ok(Json(DecayResponse { affected_count }))
 }
@@ -299,9 +314,96 @@ async fn trigger_evict(
     State(state): State<ApiState>,
     Json(req): Json<EvictRequest>,
 ) -> Result<Json<EvictResponse>, ApiError> {
-    let evicted_count = state.store.evict_below_weight(req.threshold).await?;
+    let evicted_count = state.engine.store.evict_below_weight(req.threshold).await?;
 
     Ok(Json(EvictResponse { evicted_count }))
+}
+
+/// POST /search — Semantic search using embeddings
+async fn search(
+    State(state): State<ApiState>,
+    Json(req): Json<SearchRequest>,
+) -> Result<Json<SearchResponse>, ApiError> {
+    // Find the query node by value
+    let query_node = state
+        .engine
+        .store
+        .find_node_by_value(&req.query_node)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Query node not found: {}", req.query_node)))?;
+
+    // Get the embedding for the query node
+    let embeddings_store = state.engine.embeddings.read().await;
+    let query_embedding = embeddings_store
+        .get(query_node.id)
+        .ok_or_else(|| ApiError::NotFound(format!("No embedding found for node: {}", req.query_node)))?;
+
+    // Find k nearest neighbors
+    let neighbors = embeddings_store.query_nearest(query_embedding, req.k)?;
+    drop(embeddings_store); // Release lock before async operations
+
+    // Build response
+    let mut results = Vec::new();
+
+    for (node_id, similarity) in neighbors {
+        // Get node value
+        let node = state
+            .engine
+            .store
+            .get_node(node_id)
+            .await?
+            .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("Node not found: {:?}", node_id)))?;
+
+        // Optionally compute confidence
+        let confidence = if req.include_confidence {
+            // Build graph view
+            let graph_view = GraphView::from_store(&*state.engine.store).await?;
+
+            // Find a triple involving this node to compute confidence
+            // We'll use the first triple we find (simplified approach)
+            let pattern = TriplePattern {
+                subject: Some(node_id),
+                predicate: None,
+                object: None,
+            };
+            let triples = state.engine.store.query_triples(pattern).await?;
+
+            if let Some(triple) = triples.first() {
+                let conf = DynamicConfidence::compute_confidence(
+                    &*state.engine.store,
+                    &graph_view,
+                    triple.id,
+                    Some(query_node.id),
+                )
+                .await?;
+                Some(conf.combined)
+            } else {
+                // No triples found for this node
+                Some(0.0)
+            }
+        } else {
+            None
+        };
+
+        results.push(SearchResult {
+            node_id: node_id.to_string(),
+            value: node.value,
+            similarity,
+            confidence,
+        });
+    }
+
+    Ok(Json(SearchResponse { results }))
+}
+
+/// POST /maintenance/recompute-embeddings — Recompute embeddings from current graph
+async fn recompute_embeddings(
+    State(state): State<ApiState>,
+    Json(req): Json<RecomputeEmbeddingsRequest>,
+) -> Result<Json<RecomputeEmbeddingsResponse>, ApiError> {
+    let embedding_count = state.engine.recompute_embeddings(req.dimensions).await?;
+
+    Ok(Json(RecomputeEmbeddingsResponse { embedding_count }))
 }
 
 /// API error types
@@ -337,7 +439,7 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::MemoryStore;
+    use crate::models::SourceType;
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -346,8 +448,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_insert_and_query_triples() {
-        let store = MemoryStore::new();
-        let app = create_router(store);
+        let engine = crate::engine::ValenceEngine::new();
+        let app = create_router(engine);
 
         // Insert triples
         let insert_req = InsertTriplesRequest {
@@ -409,8 +511,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_neighbors() {
-        let store = MemoryStore::new();
-        let app = create_router(store);
+        let engine = crate::engine::ValenceEngine::new();
+        let app = create_router(engine);
 
         // Insert a chain: Alice -> knows -> Bob -> knows -> Carol
         let insert_req = InsertTriplesRequest {
@@ -484,8 +586,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_stats() {
-        let store = MemoryStore::new();
-        let app = create_router(store);
+        let engine = crate::engine::ValenceEngine::new();
+        let app = create_router(engine);
 
         // Insert some triples
         let insert_req = InsertTriplesRequest {
@@ -530,8 +632,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_decay_and_evict() {
-        let store = MemoryStore::new();
-        let app = create_router(store);
+        let engine = crate::engine::ValenceEngine::new();
+        let app = create_router(engine);
 
         // Insert a triple
         let insert_req = InsertTriplesRequest {
@@ -622,8 +724,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_sources() {
-        let store = MemoryStore::new();
-        let app = create_router(store.clone());
+        let engine = crate::engine::ValenceEngine::new();
+        let app = create_router(engine.clone());
 
         // Insert with source
         let insert_req = InsertTriplesRequest {
@@ -682,5 +784,254 @@ mod tests {
             sources_resp.sources[0].reference.as_deref(),
             Some("session-123")
         );
+    }
+
+    #[tokio::test]
+    async fn test_recompute_embeddings() {
+        let engine = crate::engine::ValenceEngine::new();
+        let app = create_router(engine.clone());
+
+        // Insert some triples to build a graph
+        let insert_req = InsertTriplesRequest {
+            triples: vec![
+                TripleInput {
+                    subject: "Alice".to_string(),
+                    predicate: "knows".to_string(),
+                    object: "Bob".to_string(),
+                },
+                TripleInput {
+                    subject: "Bob".to_string(),
+                    predicate: "knows".to_string(),
+                    object: "Carol".to_string(),
+                },
+                TripleInput {
+                    subject: "Alice".to_string(),
+                    predicate: "works_with".to_string(),
+                    object: "Carol".to_string(),
+                },
+            ],
+            source: None,
+        };
+
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/triples")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&insert_req).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Recompute embeddings
+        let recompute_req = RecomputeEmbeddingsRequest { dimensions: 2 };
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/maintenance/recompute-embeddings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&recompute_req).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let recompute_resp: RecomputeEmbeddingsResponse = serde_json::from_slice(&body).unwrap();
+
+        // Should have embeddings for 3 nodes
+        assert_eq!(recompute_resp.embedding_count, 3);
+    }
+
+    #[tokio::test]
+    async fn test_search() {
+        let engine = crate::engine::ValenceEngine::new();
+        let app = create_router(engine.clone());
+
+        // Insert triples
+        let insert_req = InsertTriplesRequest {
+            triples: vec![
+                TripleInput {
+                    subject: "Alice".to_string(),
+                    predicate: "knows".to_string(),
+                    object: "Bob".to_string(),
+                },
+                TripleInput {
+                    subject: "Bob".to_string(),
+                    predicate: "knows".to_string(),
+                    object: "Carol".to_string(),
+                },
+                TripleInput {
+                    subject: "Alice".to_string(),
+                    predicate: "works_with".to_string(),
+                    object: "Carol".to_string(),
+                },
+                TripleInput {
+                    subject: "Dave".to_string(),
+                    predicate: "knows".to_string(),
+                    object: "Eve".to_string(),
+                },
+            ],
+            source: None,
+        };
+
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/triples")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&insert_req).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Recompute embeddings first
+        let recompute_req = RecomputeEmbeddingsRequest { dimensions: 4 };
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/maintenance/recompute-embeddings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&recompute_req).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Search for nodes similar to Alice
+        let search_req = SearchRequest {
+            query_node: "Alice".to_string(),
+            k: 3,
+            include_confidence: false,
+        };
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/search")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&search_req).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let search_resp: SearchResponse = serde_json::from_slice(&body).unwrap();
+
+        // Should return up to 3 results
+        assert!(search_resp.results.len() <= 3);
+        assert!(!search_resp.results.is_empty());
+
+        // First result should be Alice itself (highest similarity)
+        assert_eq!(search_resp.results[0].value, "Alice");
+        assert!(search_resp.results[0].similarity > 0.99); // Near 1.0
+
+        // Results should be sorted by similarity descending
+        for i in 1..search_resp.results.len() {
+            assert!(search_resp.results[i - 1].similarity >= search_resp.results[i].similarity);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_search_with_confidence() {
+        let engine = crate::engine::ValenceEngine::new();
+        let app = create_router(engine.clone());
+
+        // Insert triples with sources
+        let insert_req = InsertTriplesRequest {
+            triples: vec![
+                TripleInput {
+                    subject: "Alice".to_string(),
+                    predicate: "knows".to_string(),
+                    object: "Bob".to_string(),
+                },
+                TripleInput {
+                    subject: "Bob".to_string(),
+                    predicate: "knows".to_string(),
+                    object: "Carol".to_string(),
+                },
+            ],
+            source: Some(SourceInput {
+                source_type: SourceType::Conversation,
+                reference: Some("test".to_string()),
+            }),
+        };
+
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/triples")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&insert_req).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Recompute embeddings
+        let recompute_req = RecomputeEmbeddingsRequest { dimensions: 2 };
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/maintenance/recompute-embeddings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&recompute_req).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Search with confidence
+        let search_req = SearchRequest {
+            query_node: "Alice".to_string(),
+            k: 2,
+            include_confidence: true,
+        };
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/search")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&search_req).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let search_resp: SearchResponse = serde_json::from_slice(&body).unwrap();
+
+        // Should have confidence scores
+        for result in &search_resp.results {
+            assert!(result.confidence.is_some());
+        }
     }
 }

@@ -9,8 +9,10 @@ pub mod storage;
 pub mod graph;       // In-memory graph algorithms (petgraph)
 pub mod api;         // HTTP server for MCP
 pub mod embeddings;  // Topology-derived embeddings
+pub mod engine;      // Unified engine: storage + embeddings + lifecycle
 // pub mod query;       // Hybrid retrieval (vector + graph)
 
 pub use models::{Triple, Node, Source};
 pub use storage::TripleStore;
 pub use graph::{GraphView, ConfidenceScore};
+pub use engine::ValenceEngine;

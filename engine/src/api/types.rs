@@ -133,3 +133,54 @@ pub struct EvictRequest {
 pub struct EvictResponse {
     pub evicted_count: u64,
 }
+
+/// Request to search for similar nodes
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SearchRequest {
+    /// Node value to search for
+    pub query_node: String,
+    /// Number of results to return
+    #[serde(default = "default_k")]
+    pub k: usize,
+    /// Whether to include dynamic confidence scores
+    #[serde(default)]
+    pub include_confidence: bool,
+}
+
+fn default_k() -> usize {
+    10
+}
+
+/// A single search result
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SearchResult {
+    pub node_id: String,
+    pub value: String,
+    pub similarity: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+}
+
+/// Response from search endpoint
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SearchResponse {
+    pub results: Vec<SearchResult>,
+}
+
+/// Request to recompute embeddings
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RecomputeEmbeddingsRequest {
+    /// Number of dimensions for the embeddings
+    #[serde(default = "default_dimensions")]
+    pub dimensions: usize,
+}
+
+fn default_dimensions() -> usize {
+    64
+}
+
+/// Response from recompute-embeddings endpoint
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RecomputeEmbeddingsResponse {
+    pub embedding_count: usize,
+}

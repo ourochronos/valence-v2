@@ -19,7 +19,7 @@ use faer::prelude::*;
 use petgraph::visit::EdgeRef;
 
 use crate::models::NodeId;
-use crate::storage::MemoryStore;
+use crate::storage::TripleStore;
 use crate::graph::GraphView;
 
 /// Configuration for spectral embedding computation
@@ -50,9 +50,9 @@ impl SpectralConfig {
     }
 }
 
-/// Compute spectral embeddings from a MemoryStore
+/// Compute spectral embeddings from any TripleStore
 pub async fn compute_embeddings(
-    store: &MemoryStore,
+    store: &impl TripleStore,
     dimensions: usize,
 ) -> Result<HashMap<NodeId, Vec<f32>>> {
     let config = SpectralConfig::new(dimensions);
@@ -61,7 +61,7 @@ pub async fn compute_embeddings(
 
 /// Compute spectral embeddings with custom configuration
 pub async fn compute_embeddings_with_config(
-    store: &MemoryStore,
+    store: &impl TripleStore,
     config: SpectralConfig,
 ) -> Result<HashMap<NodeId, Vec<f32>>> {
     // Build graph view from store
@@ -251,7 +251,7 @@ fn compute_eigenvectors(laplacian: &Mat<f64>, k: usize) -> Result<Mat<f64>> {
 mod tests {
     use super::*;
     use crate::models::Triple;
-    use crate::storage::TripleStore;
+    use crate::storage::{MemoryStore, TripleStore};
 
     #[tokio::test]
     async fn test_spectral_embeddings_dimensionality() {

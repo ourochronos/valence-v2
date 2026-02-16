@@ -48,10 +48,9 @@ impl DynamicConfidence {
     /// - Average connectivity of source nodes
     pub async fn source_reliability(
         store: &impl TripleStore,
-        graph: &GraphView,
+        _graph: &GraphView,
         triple_id: TripleId,
     ) -> Result<f64> {
-        let _ = graph; // Reserved for future use to compute source node connectivity
         let sources = store.get_sources_for_triple(triple_id).await?;
         
         if sources.is_empty() {

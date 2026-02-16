@@ -9,7 +9,7 @@ use tokio::signal;
 use tracing::info;
 use tracing_subscriber;
 
-use valence_engine::{api::create_router, storage::MemoryStore};
+use valence_engine::{api::create_router, ValenceEngine};
 
 /// Valence Engine - Triple-based knowledge substrate
 #[derive(Parser, Debug)]
@@ -32,13 +32,13 @@ async fn main() -> Result<()> {
     // Parse CLI arguments
     let args = Args::parse();
 
-    // Initialize the memory store
-    info!("Initializing MemoryStore...");
-    let store = MemoryStore::new();
+    // Initialize the ValenceEngine
+    info!("Initializing ValenceEngine...");
+    let engine = ValenceEngine::new();
 
     // Create the API router
     info!("Creating API router...");
-    let app = create_router(store);
+    let app = create_router(engine);
 
     // Parse address
     let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
