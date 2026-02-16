@@ -2,40 +2,244 @@
   "id": "valence-v2",
   "name": "Valence v2 Knowledge Engine",
   "description": "Triple-based knowledge substrate with topology-derived embeddings for personal memory and reasoning",
-  "version": "0.1.0",
+  "version": "2.0.0",
+  "author": "Chris McKenzie",
   "kind": "memory",
   "transport": "stdio",
   "command": ["valence-engine", "--mode", "mcp"],
+  "capabilities": {
+    "beliefStorage": true,
+    "patternRecognition": true,
+    "sessionTracking": true,
+    "semanticSearch": true,
+    "tripleStore": true,
+    "topologyEmbeddings": true,
+    "contextAssembly": true,
+    "stigmergy": true,
+    "workingSets": true
+  },
   "tools": [
     {
       "name": "insert_triples",
-      "description": "Insert one or more triples (subject-predicate-object) with optional source provenance. Use this to store knowledge claims, facts, or relationships between entities."
+      "category": "basic",
+      "description": "Insert one or more triples (subject-predicate-object) with optional source provenance. Use this to store knowledge claims, facts, or relationships between entities.",
+      "parameters": {
+        "type": "object",
+        "required": ["triples"],
+        "properties": {
+          "triples": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["subject", "predicate", "object"],
+              "properties": {
+                "subject": { "type": "string", "description": "Subject node value" },
+                "predicate": { "type": "string", "description": "Relationship/predicate" },
+                "object": { "type": "string", "description": "Object node value" }
+              }
+            }
+          },
+          "source": {
+            "type": "object",
+            "properties": {
+              "source_type": { "type": "string", "description": "Type of source (conversation, observation, inference, user_input, document)" },
+              "reference": { "type": "string", "description": "Reference to source (URL, file path, session ID)" }
+            }
+          }
+        }
+      }
     },
     {
       "name": "query_triples",
-      "description": "Query triples by pattern matching. Supports wildcards by omitting subject, predicate, or object filters. Use this to retrieve stored knowledge by structure."
+      "category": "basic",
+      "description": "Query triples by pattern matching. Supports wildcards by omitting subject, predicate, or object filters. Use this to retrieve stored knowledge by structure.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "subject": { "type": "string", "description": "Filter by subject value (optional, wildcard if omitted)" },
+          "predicate": { "type": "string", "description": "Filter by predicate (optional, wildcard if omitted)" },
+          "object": { "type": "string", "description": "Filter by object value (optional, wildcard if omitted)" },
+          "limit": { "type": "number", "description": "Maximum results to return" },
+          "include_sources": { "type": "boolean", "description": "Include provenance sources in response" }
+        }
+      }
     },
     {
       "name": "search",
-      "description": "Semantic search for nodes similar to a query node using topology-derived embeddings. Use this to find conceptually related knowledge even without exact matches."
+      "category": "basic",
+      "description": "Semantic search for nodes similar to a query node using topology-derived embeddings. Use this to find conceptually related knowledge even without exact matches.",
+      "parameters": {
+        "type": "object",
+        "required": ["query_node", "k"],
+        "properties": {
+          "query_node": { "type": "string", "description": "Query node value to search from" },
+          "k": { "type": "number", "description": "Number of nearest neighbors to return" },
+          "include_confidence": { "type": "boolean", "description": "Compute and include confidence scores" }
+        }
+      }
     },
     {
       "name": "neighbors",
-      "description": "Get k-hop neighborhood of a node - all triples within specified depth. Use this to explore the context and relationships around a concept."
+      "category": "basic",
+      "description": "Get k-hop neighborhood of a node - all triples within specified depth. Use this to explore the context and relationships around a concept.",
+      "parameters": {
+        "type": "object",
+        "required": ["node"],
+        "properties": {
+          "node": { "type": "string", "description": "Starting node value or UUID" },
+          "depth": { "type": "number", "description": "Maximum hop depth (default: 1)" },
+          "limit": { "type": "number", "description": "Maximum results to return" }
+        }
+      }
     },
     {
       "name": "sources",
-      "description": "Get provenance sources for a specific triple. Use this to understand where a piece of knowledge came from and assess its trustworthiness."
+      "category": "basic",
+      "description": "Get provenance sources for a specific triple. Use this to understand where a piece of knowledge came from and assess its trustworthiness.",
+      "parameters": {
+        "type": "object",
+        "required": ["triple_id"],
+        "properties": {
+          "triple_id": { "type": "string", "description": "UUID of the triple" }
+        }
+      }
     },
     {
       "name": "stats",
-      "description": "Get current engine statistics (triple count, node count, average weight). Use this to understand the current state and size of the knowledge base."
+      "category": "basic",
+      "description": "Get current engine statistics (triple count, node count, average weight). Use this to understand the current state and size of the knowledge base.",
+      "parameters": {
+        "type": "object"
+      }
     },
     {
       "name": "maintain",
-      "description": "Run maintenance operations: decay weights (reduce importance of old knowledge), evict low-weight triples (clean up noise), and recompute embeddings (update semantic relationships). Use this periodically to keep the knowledge base healthy."
+      "category": "basic",
+      "description": "Run maintenance operations: decay weights (reduce importance of old knowledge), evict low-weight triples (clean up noise), and recompute embeddings (update semantic relationships). Use this periodically to keep the knowledge base healthy.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "decay_factor": { "type": "number", "description": "Weight decay multiplier (e.g., 0.95)" },
+          "evict_threshold": { "type": "number", "description": "Minimum weight to keep (evict below this)" },
+          "recompute_embeddings": { "type": "boolean", "description": "Recompute topology embeddings" },
+          "embedding_dimensions": { "type": "number", "description": "Embedding dimension count (default: 64)" }
+        }
+      }
+    },
+    {
+      "name": "context_for_query",
+      "category": "high-level",
+      "description": "Assemble optimal context for a query using working set, budget constraints, and fusion scoring. Returns formatted context ready for LLM consumption. Use this for intelligent context retrieval instead of manual query_triples + search combinations.",
+      "parameters": {
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+          "query": { "type": "string", "description": "Query string" },
+          "max_triples": { "type": "number", "description": "Maximum triples to include (default: 50)" },
+          "max_nodes": { "type": "number", "description": "Maximum nodes to include (default: 100)" },
+          "include_confidence": { "type": "boolean", "description": "Include confidence scores (default: true)" },
+          "format": { 
+            "type": "string", 
+            "enum": ["plain", "markdown", "json"],
+            "description": "Output format (default: markdown)" 
+          },
+          "session_id": { "type": "string", "description": "Session ID for session-scoped context (optional)" }
+        }
+      }
+    },
+    {
+      "name": "record_feedback",
+      "category": "high-level",
+      "description": "Record feedback about which triples were useful in the context. Boosts weights of useful triples via stigmergy (touch/access) and lets not-useful ones naturally decay. Feeds the inference loop.",
+      "parameters": {
+        "type": "object",
+        "required": ["session_id", "useful_triple_ids"],
+        "properties": {
+          "session_id": { "type": "string", "description": "Session ID this feedback belongs to" },
+          "useful_triple_ids": { 
+            "type": "array", 
+            "items": { "type": "string" },
+            "description": "Triple UUIDs that were useful/relevant" 
+          },
+          "not_useful_triple_ids": { 
+            "type": "array", 
+            "items": { "type": "string" },
+            "description": "Triple UUIDs that were not useful (optional)" 
+          }
+        }
+      }
+    },
+    {
+      "name": "session_start",
+      "category": "high-level",
+      "description": "Start a new conversation session with an initial query. Creates a working set that evolves over the session. Use this to initialize session-scoped context tracking.",
+      "parameters": {
+        "type": "object",
+        "required": ["initial_query"],
+        "properties": {
+          "initial_query": { "type": "string", "description": "Initial query or context for the session" },
+          "session_id": { "type": "string", "description": "Optional session UUID (generated if not provided)" }
+        }
+      }
+    },
+    {
+      "name": "session_end",
+      "category": "high-level",
+      "description": "End a conversation session. Archives resolved threads and cleans up session state. Use this when a conversation ends to persist learnings.",
+      "parameters": {
+        "type": "object",
+        "required": ["session_id"],
+        "properties": {
+          "session_id": { "type": "string", "description": "Session UUID to end" }
+        }
+      }
+    },
+    {
+      "name": "explore",
+      "category": "high-level",
+      "description": "Explore the knowledge graph interactively starting from a node. Uses tiered retrieval with budget constraints for efficient exploration. Use this for guided discovery rather than exhaustive queries.",
+      "parameters": {
+        "type": "object",
+        "required": ["start_node"],
+        "properties": {
+          "start_node": { "type": "string", "description": "Starting node value or UUID" },
+          "max_depth": { "type": "number", "description": "Maximum depth to explore (default: 2)" },
+          "max_results": { "type": "number", "description": "Maximum results to return (default: 20)" },
+          "time_budget_ms": { "type": "number", "description": "Time budget in milliseconds (default: 1000)" }
+        }
+      }
     }
   ],
+  "migration": {
+    "from": "memory-valence",
+    "fromVersion": "1.x",
+    "toolMapping": {
+      "belief_query": {
+        "v2Tool": "query_triples",
+        "notes": "Triple-based query replaces belief documents. Use subject/predicate/object filters instead of text queries."
+      },
+      "belief_search": {
+        "v2Tool": "context_for_query",
+        "notes": "High-level context assembly replaces semantic belief search. Returns formatted context ready for LLM use."
+      },
+      "belief_create": {
+        "v2Tool": "insert_triples",
+        "notes": "Store knowledge as triples instead of belief documents. Map belief content to subject-predicate-object structure."
+      },
+      "pattern_list": {
+        "v2Tool": "explore",
+        "notes": "Graph exploration replaces pattern enumeration. Use tiered retrieval to discover recurring structures."
+      },
+      "session_start": {
+        "v2Tool": "session_start",
+        "notes": "Session lifecycle preserved but now uses working sets for context evolution."
+      },
+      "session_end": {
+        "v2Tool": "session_end",
+        "notes": "Session lifecycle preserved. Archives resolved threads into triple store."
+      }
+    }
+  },
   "resources": [],
   "prompts": []
 }
