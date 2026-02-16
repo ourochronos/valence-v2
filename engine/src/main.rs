@@ -13,6 +13,68 @@ use tracing::{info, warn};
 
 use valence_engine::{api::create_router, ValenceEngine, EngineConfig};
 
+/// Print startup banner with configuration summary
+fn print_startup_banner(config: &EngineConfig) {
+    let version = env!("CARGO_PKG_VERSION");
+    let banner = r#"
+╔══════════════════════════════════════════════════════════════════════════╗
+║                          VALENCE ENGINE v{version}                          ║
+║          Triple-based Knowledge Substrate with Topology Embeddings       ║
+╚══════════════════════════════════════════════════════════════════════════╝
+"#;
+    
+    println!("{}", banner.replace("{version}", version));
+    info!("═══════════════════════════════════════════════════════════════════");
+    info!("Configuration Summary:");
+    info!("  Mode:         {}", config.server.mode);
+    if config.server.mode == "http" || config.server.mode == "both" {
+        info!("  Host:         {}", config.server.host);
+        info!("  Port:         {}", config.server.port);
+    }
+    
+    use valence_engine::config::StorageConfig;
+    match &config.storage {
+        #[cfg(feature = "postgres")]
+        StorageConfig::Postgres { url } => {
+            info!("  Database:     PostgreSQL ({})", mask_password(url));
+        }
+        #[cfg(feature = "postgres")]
+        StorageConfig::Tiered { database_url, hot_capacity, .. } => {
+            info!("  Database:     Tiered (hot: {} triples, cold: PostgreSQL)", hot_capacity);
+            info!("                PostgreSQL ({})", mask_password(database_url));
+        }
+        StorageConfig::Memory => {
+            info!("  Database:     Memory (volatile)");
+        }
+    }
+    
+    info!("  Log Level:    {}", std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()));
+    info!("═══════════════════════════════════════════════════════════════════");
+}
+
+/// Print engine status after initialization
+async fn print_engine_status(engine: &ValenceEngine, store_type: &str) -> Result<()> {
+    let triple_count = engine.store.count_triples().await?;
+    let node_count = engine.store.count_nodes().await?;
+    let lifecycle_status = engine.lifecycle_status().await?;
+    let has_embeddings = engine.has_embeddings().await;
+    
+    info!("Engine Status:");
+    info!("  Store Type:            {}", store_type);
+    info!("  Triple Count:          {}", triple_count);
+    info!("  Node Count:            {}", node_count);
+    info!("  Max Triples:           {}", lifecycle_status.max_triples);
+    info!("  Max Nodes:             {}", lifecycle_status.max_nodes);
+    info!("  Embeddings Enabled:    {}", has_embeddings);
+    info!("  Stigmergy Enabled:     true");
+    info!("  Lifecycle Management:  true");
+    info!("  Resilience Module:     true");
+    info!("  Inference Training:    {}", engine.feedback_recorder.is_some());
+    info!("═══════════════════════════════════════════════════════════════════");
+    
+    Ok(())
+}
+
 /// Valence Engine - Triple-based knowledge substrate
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -67,9 +129,15 @@ async fn main() -> Result<()> {
     info!("Configuration loaded: mode={}, host={}, port={}", 
           config.server.mode, config.server.host, config.server.port);
 
+    // Print startup banner
+    print_startup_banner(&config);
+
     // Initialize the ValenceEngine with appropriate storage backend
     info!("Initializing ValenceEngine...");
-    let engine = initialize_engine(&config.storage).await?;
+    let (engine, store_type) = initialize_engine(&config.storage).await?;
+
+    // Print engine status
+    print_engine_status(&engine, &store_type).await?;
 
     // Run server based on mode
     match config.server.mode.as_str() {
@@ -131,6 +199,7 @@ async fn run_http_server(engine: ValenceEngine, config: &EngineConfig) -> Result
     // Parse address
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port).parse()?;
     info!("Starting Valence Engine HTTP server on {}", addr);
+    info!("Health endpoint available at: http://{}:{}/health", config.server.host, config.server.port);
 
     // Create TCP listener
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -140,6 +209,7 @@ async fn run_http_server(engine: ValenceEngine, config: &EngineConfig) -> Result
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
+    info!("HTTP server shut down successfully");
     Ok(())
 }
 
@@ -163,6 +233,7 @@ async fn run_both_servers(engine: ValenceEngine, config: &EngineConfig) -> Resul
     // Parse address
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port).parse()?;
     info!("Starting Valence Engine HTTP server on {}", addr);
+    info!("Health endpoint available at: http://{}:{}/health", config.server.host, config.server.port);
     
     // Create TCP listener
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -180,18 +251,20 @@ async fn run_both_servers(engine: ValenceEngine, config: &EngineConfig) -> Resul
         }
     }
     
+    info!("HTTP and MCP servers shut down successfully");
     Ok(())
 }
 
 /// Initialize ValenceEngine with the appropriate storage backend
-async fn initialize_engine(storage_config: &valence_engine::config::StorageConfig) -> Result<ValenceEngine> {
+/// Returns (engine, store_type_description)
+async fn initialize_engine(storage_config: &valence_engine::config::StorageConfig) -> Result<(ValenceEngine, String)> {
     use valence_engine::config::StorageConfig;
     
     match storage_config {
         StorageConfig::Memory => {
             info!("Using in-memory storage backend");
             warn!("Data will not persist after server restart");
-            Ok(ValenceEngine::new())
+            Ok((ValenceEngine::new(), "memory".to_string()))
         }
         
         #[cfg(feature = "postgres")]
@@ -205,7 +278,7 @@ async fn initialize_engine(storage_config: &valence_engine::config::StorageConfi
                 .context("Failed to initialize PostgreSQL store")?;
             
             info!("PostgreSQL store initialized successfully");
-            Ok(ValenceEngine::from_triple_store(store))
+            Ok((ValenceEngine::from_triple_store(store), "postgres".to_string()))
         }
         
         #[cfg(feature = "postgres")]
@@ -243,13 +316,12 @@ async fn initialize_engine(storage_config: &valence_engine::config::StorageConfi
             let store = TieredStore::new(cold_store, tiered_config);
             
             info!("Tiered storage initialized successfully");
-            Ok(ValenceEngine::from_triple_store(store))
+            Ok((ValenceEngine::from_triple_store(store), "tiered".to_string()))
         }
     }
 }
 
 /// Mask password in database URL for logging
-#[cfg(feature = "postgres")]
 fn mask_password(url: &str) -> String {
     if let Some(at_pos) = url.rfind('@') {
         if let Some(colon_pos) = url[..at_pos].rfind(':') {

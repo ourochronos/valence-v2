@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -17,8 +15,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+      start_period: 10s
     networks:
       - valence-network
+    restart: unless-stopped
 
   valence-engine:
     build:
@@ -29,6 +29,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://valence:valence_dev_password@postgres:5432/valence}
       VALENCE_HOST: ${VALENCE_HOST:-0.0.0.0}
       VALENCE_PORT: ${VALENCE_PORT:-8421}
+      VALENCE_MODE: ${VALENCE_MODE:-http}
       RUST_LOG: ${RUST_LOG:-info}
     ports:
       - "8421:8421"
@@ -40,9 +41,12 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 15s
     networks:
       - valence-network
+    restart: unless-stopped
+    # Graceful shutdown: allow 30s for in-flight requests to complete
+    stop_grace_period: 30s
 
 volumes:
   valence-postgres-data:
