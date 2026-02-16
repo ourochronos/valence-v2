@@ -33,6 +33,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 # CLI parsing
 clap = { version = "4", features = ["derive", "env"] }
+# Configuration (TOML)
+toml = "0.8"
 # PostgreSQL support
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json"], optional = true }
 # MCP (Model Context Protocol) support

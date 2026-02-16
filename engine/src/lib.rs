@@ -7,6 +7,7 @@
 pub mod error;       // Error types
 pub mod models;
 pub mod storage;
+pub mod config;      // Unified configuration system
 pub mod tiered_store; // Cold/warm split: hot (memory) + cold (postgres) with promotion/demotion
 pub mod graph;       // In-memory graph algorithms (petgraph)
 pub mod api;         // HTTP server for MCP
@@ -24,6 +25,7 @@ pub mod inference;   // Inference training loop: query patterns feed back to imp
 pub use error::{ValenceError, Result};
 pub use models::{Triple, Node, Source};
 pub use storage::TripleStore;
+pub use config::EngineConfig;
 pub use tiered_store::{TieredStore, TieredConfig, PromotionPolicy, DemotionPolicy, Tier};
 pub use graph::{GraphView, ConfidenceScore};
 pub use engine::ValenceEngine;

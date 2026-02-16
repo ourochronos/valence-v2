@@ -1,0 +1,153 @@
+# Valence Engine Configuration Example
+#
+# This file demonstrates all available configuration options.
+# Copy to valence-engine.toml and customize as needed.
+
+# ============================================================================
+# Server Configuration
+# ============================================================================
+[server]
+# Server mode: "http", "mcp", or "both"
+# - http: HTTP REST API only
+# - mcp: Model Context Protocol (stdio) only
+# - both: Run HTTP server and MCP concurrently
+mode = "http"
+
+# Host to bind HTTP server to
+host = "127.0.0.1"
+
+# Port for HTTP server
+port = 8421
+
+# ============================================================================
+# Storage Backend Configuration
+# ============================================================================
+[storage]
+# Storage type: "memory", "postgres", or "tiered"
+type = "memory"
+
+# --- PostgreSQL Storage (requires --features postgres) ---
+# [storage]
+# type = "postgres"
+# url = "postgres://user:password@localhost/valence"
+
+# --- Tiered Storage (hot memory + cold postgres) ---
+# [storage]
+# type = "tiered"
+# database_url = "postgres://user:password@localhost/valence"
+# hot_capacity = 10000  # Max triples in memory
+# track_accesses = true
+# demotion_interval_secs = 300  # 5 minutes
+
+# [storage.promotion_policy]
+# type = "access_threshold"
+# min_accesses = 3
+
+# [storage.demotion_policy]
+# type = "least_recently_used"
+
+# ============================================================================
+# Embeddings Configuration
+# ============================================================================
+[embeddings.spectral]
+# Spectral embedding dimensions
+dimensions = 64
+# Use normalized Laplacian
+normalize = true
+
+[embeddings.node2vec]
+# Node2Vec embedding dimensions
+dimensions = 64
+# Random walk length
+walk_length = 80
+# Walks per node
+walks_per_node = 10
+# Return parameter (higher = more exploration)
+p = 1.0
+# In-out parameter (q > 1: BFS-like, q < 1: DFS-like)
+q = 1.0
+# Context window for skip-gram
+window = 5
+# Training epochs
+epochs = 5
+# Learning rate
+learning_rate = 0.025
+
+# ============================================================================
+# Stigmergy Configuration (Access Tracking & Co-Retrieval)
+# ============================================================================
+[stigmergy.access_tracker]
+# Maximum access events to track
+window_size = 10000
+# Hours before access events decay
+decay_hours = 24
+
+[stigmergy.co_retrieval]
+# Minimum co-access count before creating edge
+threshold = 3
+# Predicate for co-retrieval edges
+predicate = "co_retrieved_with"
+
+# ============================================================================
+# Lifecycle Configuration (Decay & Bounds)
+# ============================================================================
+[lifecycle.decay]
+# Base decay factor per cycle (0.0-1.0)
+# Weight is multiplied by this each cycle
+base_factor = 0.95
+# Weight boost when triple is accessed
+access_boost = 0.1
+# Extra weight per provenance source
+source_protection = 0.05
+# Extra weight for structurally central triples
+centrality_protection = 0.1
+# Minimum weight before eviction consideration
+min_weight = 0.01
+
+[lifecycle.bounds]
+# Hard cap on triple count
+max_triples = 10000
+# Hard cap on node count
+max_nodes = 5000
+# Target utilization when evicting (0.0-1.0)
+target_utilization = 0.8
+
+# ============================================================================
+# Inference Configuration (Feedback Loop)
+# ============================================================================
+[inference.feedback]
+# Maximum feedback events to retain
+max_events = 10000
+# Minimum feedback before weight adjustment
+min_feedback_count = 10
+
+[inference.weight_adjuster]
+# Learning rate for weight adjustments
+learning_rate = 0.01
+# Minimum weight value
+min_weight = 0.0
+# Maximum weight value
+max_weight = 1.0
+
+# ============================================================================
+# Budget Configuration (Default Operation Budgets)
+# ============================================================================
+[budget]
+# Default time budget in milliseconds
+time_budget_ms = 1000
+# Default hop budget (max graph traversal depth)
+hop_budget = 5
+# Default result budget (max results to return)
+result_budget = 100
+
+# ============================================================================
+# Query Configuration (Fusion Scoring)
+# ============================================================================
+[query.fusion]
+# Weights for multi-dimensional fusion scoring
+# These should sum to approximately 1.0
+similarity_weight = 0.35      # Embedding cosine similarity
+confidence_weight = 0.25      # Dynamic confidence from topology
+recency_weight = 0.20         # Last accessed freshness
+graph_distance_weight = 0.10  # Inverse hop count
+source_count_weight = 0.10    # Number of provenance sources

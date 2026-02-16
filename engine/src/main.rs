@@ -7,28 +7,33 @@ use anyhow::Result;
 use anyhow::Context;
 use clap::Parser;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use tokio::signal;
 use tracing::{info, warn};
 
-use valence_engine::{api::create_router, ValenceEngine};
+use valence_engine::{api::create_router, ValenceEngine, EngineConfig};
 
 /// Valence Engine - Triple-based knowledge substrate
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Server mode: http, mcp, or both
-    #[arg(long, env = "VALENCE_MODE", default_value = "http")]
-    mode: String,
+    /// Path to configuration file (TOML format)
+    #[arg(short, long, value_name = "FILE")]
+    config: Option<PathBuf>,
 
-    /// Host to bind to (for HTTP mode)
-    #[arg(long, env = "VALENCE_HOST", default_value = "127.0.0.1")]
-    host: String,
+    /// Server mode: http, mcp, or both (overrides config file)
+    #[arg(long, env = "VALENCE_MODE")]
+    mode: Option<String>,
 
-    /// Port to bind to (for HTTP mode)
-    #[arg(long, env = "VALENCE_PORT", default_value_t = 8421)]
-    port: u16,
+    /// Host to bind to for HTTP mode (overrides config file)
+    #[arg(long, env = "VALENCE_HOST")]
+    host: Option<String>,
 
-    /// PostgreSQL database URL (optional, uses in-memory storage if not provided)
+    /// Port to bind to for HTTP mode (overrides config file)
+    #[arg(long, env = "VALENCE_PORT")]
+    port: Option<u16>,
+
+    /// PostgreSQL database URL (overrides config file)
     #[arg(long, env = "DATABASE_URL")]
     database_url: Option<String>,
 }
@@ -41,15 +46,36 @@ async fn main() -> Result<()> {
     // Parse CLI arguments
     let args = Args::parse();
 
+    // Load configuration
+    info!("Loading configuration...");
+    let mut config = EngineConfig::load(args.config.as_deref())?;
+    
+    // Apply CLI overrides
+    if let Some(mode) = args.mode {
+        config.server.mode = mode;
+    }
+    if let Some(host) = args.host {
+        config.server.host = host;
+    }
+    if let Some(port) = args.port {
+        config.server.port = port;
+    }
+    if let Some(database_url) = args.database_url {
+        apply_database_url(&mut config.storage, database_url);
+    }
+    
+    info!("Configuration loaded: mode={}, host={}, port={}", 
+          config.server.mode, config.server.host, config.server.port);
+
     // Initialize the ValenceEngine with appropriate storage backend
     info!("Initializing ValenceEngine...");
-    let engine = initialize_engine(args.database_url.as_deref()).await?;
+    let engine = initialize_engine(&config.storage).await?;
 
     // Run server based on mode
-    match args.mode.as_str() {
+    match config.server.mode.as_str() {
         "http" => {
             info!("Starting in HTTP mode");
-            run_http_server(engine, &args).await?;
+            run_http_server(engine, &config).await?;
         }
         "mcp" => {
             info!("Starting in MCP mode (stdio)");
@@ -57,7 +83,7 @@ async fn main() -> Result<()> {
         }
         "both" => {
             info!("Starting in both HTTP + MCP mode");
-            run_both_servers(engine, &args).await?;
+            run_both_servers(engine, &config).await?;
         }
         mode => {
             return Err(anyhow::anyhow!(
@@ -71,14 +97,39 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Apply database URL override to storage config
+#[cfg(feature = "postgres")]
+fn apply_database_url(storage: &mut valence_engine::config::StorageConfig, database_url: String) {
+    use valence_engine::config::StorageConfig;
+    
+    match storage {
+        StorageConfig::Postgres { url } => {
+            *url = database_url;
+        }
+        StorageConfig::Tiered { database_url: db_url, .. } => {
+            *db_url = database_url;
+        }
+        StorageConfig::Memory => {
+            // Upgrade to Postgres when URL is provided
+            *storage = StorageConfig::Postgres { url: database_url };
+        }
+    }
+}
+
+#[cfg(not(feature = "postgres"))]
+fn apply_database_url(_storage: &mut valence_engine::config::StorageConfig, _database_url: String) {
+    warn!("DATABASE_URL provided but postgres feature not enabled");
+    warn!("Rebuild with --features postgres to use PostgreSQL storage");
+}
+
 /// Run HTTP server only
-async fn run_http_server(engine: ValenceEngine, args: &Args) -> Result<()> {
+async fn run_http_server(engine: ValenceEngine, config: &EngineConfig) -> Result<()> {
     // Create the API router
     info!("Creating API router...");
     let app = create_router(engine);
 
     // Parse address
-    let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
+    let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port).parse()?;
     info!("Starting Valence Engine HTTP server on {}", addr);
 
     // Create TCP listener
@@ -103,14 +154,14 @@ async fn run_mcp_server(engine: ValenceEngine) -> Result<()> {
 }
 
 /// Run both HTTP and MCP servers concurrently
-async fn run_both_servers(engine: ValenceEngine, args: &Args) -> Result<()> {
+async fn run_both_servers(engine: ValenceEngine, config: &EngineConfig) -> Result<()> {
     use valence_engine::mcp::McpServer;
     
     // Create the API router
     let app = create_router(engine.clone());
     
     // Parse address
-    let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
+    let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port).parse()?;
     info!("Starting Valence Engine HTTP server on {}", addr);
     
     // Create TCP listener
@@ -133,36 +184,66 @@ async fn run_both_servers(engine: ValenceEngine, args: &Args) -> Result<()> {
 }
 
 /// Initialize ValenceEngine with the appropriate storage backend
-async fn initialize_engine(database_url: Option<&str>) -> Result<ValenceEngine> {
-    match database_url {
-        Some(_url) => {
-            #[cfg(feature = "postgres")]
-            {
-                info!("Initializing PostgreSQL storage backend");
-                info!("Database URL: {}", mask_password(url));
-                
-                use valence_engine::storage::PgStore;
-                let store = PgStore::new(url)
-                    .await
-                    .context("Failed to initialize PostgreSQL store")?;
-                
-                info!("PostgreSQL store initialized successfully");
-                Ok(ValenceEngine::from_triple_store(store))
-            }
-            
-            #[cfg(not(feature = "postgres"))]
-            {
-                warn!("DATABASE_URL provided but postgres feature not enabled");
-                warn!("Rebuild with --features postgres to use PostgreSQL storage");
-                warn!("Falling back to in-memory storage");
-                Ok(ValenceEngine::new())
-            }
-        }
-        None => {
-            info!("No DATABASE_URL provided, using in-memory storage");
+async fn initialize_engine(storage_config: &valence_engine::config::StorageConfig) -> Result<ValenceEngine> {
+    use valence_engine::config::StorageConfig;
+    
+    match storage_config {
+        StorageConfig::Memory => {
+            info!("Using in-memory storage backend");
             warn!("Data will not persist after server restart");
-            warn!("Set DATABASE_URL environment variable or use --database-url flag for persistent storage");
             Ok(ValenceEngine::new())
+        }
+        
+        #[cfg(feature = "postgres")]
+        StorageConfig::Postgres { url } => {
+            info!("Initializing PostgreSQL storage backend");
+            info!("Database URL: {}", mask_password(url));
+            
+            use valence_engine::storage::PgStore;
+            let store = PgStore::new(url)
+                .await
+                .context("Failed to initialize PostgreSQL store")?;
+            
+            info!("PostgreSQL store initialized successfully");
+            Ok(ValenceEngine::from_triple_store(store))
+        }
+        
+        #[cfg(feature = "postgres")]
+        StorageConfig::Tiered {
+            database_url,
+            hot_capacity,
+            promotion_policy,
+            demotion_policy,
+            demotion_interval_secs,
+            track_accesses,
+        } => {
+            info!("Initializing tiered storage backend (hot memory + cold PostgreSQL)");
+            info!("Database URL: {}", mask_password(database_url));
+            info!("Hot tier capacity: {} triples", hot_capacity);
+            
+            use valence_engine::storage::PgStore;
+            use valence_engine::tiered_store::{TieredStore, TieredConfig};
+            
+            // Create cold tier (PostgreSQL)
+            let cold_store = PgStore::new(database_url)
+                .await
+                .context("Failed to initialize PostgreSQL cold store")?;
+            
+            // Create tiered config
+            let tiered_config = TieredConfig {
+                hot_capacity: *hot_capacity,
+                promotion_policy: promotion_policy.clone().into(),
+                demotion_policy: demotion_policy.clone().into(),
+                demotion_interval_secs: *demotion_interval_secs,
+                enable_cold_tier: true,
+                track_accesses: *track_accesses,
+            };
+            
+            // Create tiered store
+            let store = TieredStore::new(cold_store, tiered_config);
+            
+            info!("Tiered storage initialized successfully");
+            Ok(ValenceEngine::from_triple_store(store))
         }
     }
 }
