@@ -24,6 +24,7 @@ pub trait TripleStore: Send + Sync {
     // Triple operations  
     async fn insert_triple(&self, triple: Triple) -> Result<TripleId>;
     async fn get_triple(&self, id: TripleId) -> Result<Option<Triple>>;
+    async fn update_triple(&self, triple: Triple) -> Result<()>;
     async fn query_triples(&self, pattern: TriplePattern) -> Result<Vec<Triple>>;
     async fn touch_triple(&self, id: TripleId) -> Result<()>;
     async fn delete_triple(&self, id: TripleId) -> Result<()>;

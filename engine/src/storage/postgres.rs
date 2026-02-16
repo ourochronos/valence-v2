@@ -216,6 +216,29 @@ impl TripleStore for PgStore {
         }))
     }
 
+    async fn update_triple(&self, triple: Triple) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE triples
+            SET subject_id = $2, predicate = $3, object_id = $4, weight = $5,
+                access_count = $6, last_accessed = $7
+            WHERE id = $1
+            "#
+        )
+        .bind(triple.id)
+        .bind(triple.subject)
+        .bind(&triple.predicate.value)
+        .bind(triple.object)
+        .bind(triple.weight)
+        .bind(triple.access_count as i64)
+        .bind(triple.last_accessed)
+        .execute(&self.pool)
+        .await
+        .context("Failed to update triple")?;
+        
+        Ok(())
+    }
+
     async fn query_triples(&self, pattern: TriplePattern) -> Result<Vec<Triple>> {
         let mut query = String::from(
             "SELECT id, subject_id, predicate, object_id, weight, access_count, created_at, last_accessed FROM triples WHERE 1=1"

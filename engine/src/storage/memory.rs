@@ -100,6 +100,14 @@ impl TripleStore for MemoryStore {
         Ok(triples.get(&id).cloned())
     }
 
+    async fn update_triple(&self, triple: Triple) -> Result<()> {
+        let id = triple.id;
+        self.triples.write()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire write lock on triples: {}", e))?
+            .insert(id, triple);
+        Ok(())
+    }
+
     async fn query_triples(&self, pattern: TriplePattern) -> Result<Vec<Triple>> {
         let triples = self.triples.read()
             .map_err(|e| anyhow::anyhow!("Failed to acquire read lock on triples: {}", e))?;
