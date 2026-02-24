@@ -45,14 +45,14 @@ impl TripleStore for MemoryStore {
     async fn insert_node(&self, node: Node) -> Result<NodeId> {
         let id = node.id;
         let value = node.value.clone();
-        
+
         self.nodes.write()
             .map_err(|e| anyhow::anyhow!("Failed to acquire write lock on nodes: {}", e))?
             .insert(id, node);
         self.node_value_index.write()
             .map_err(|e| anyhow::anyhow!("Failed to acquire write lock on node_value_index: {}", e))?
             .insert(value, id);
-        
+
         Ok(id)
     }
 
@@ -66,7 +66,7 @@ impl TripleStore for MemoryStore {
         let node_value_index = self.node_value_index.read()
             .map_err(|e| anyhow::anyhow!("Failed to acquire read lock on node_value_index: {}", e))?;
         let node_id = node_value_index.get(value).copied();
-        
+
         if let Some(id) = node_id {
             let nodes = self.nodes.read()
                 .map_err(|e| anyhow::anyhow!("Failed to acquire read lock on nodes: {}", e))?;
@@ -159,11 +159,11 @@ impl TripleStore for MemoryStore {
     async fn insert_source(&self, source: Source) -> Result<SourceId> {
         let id = source.id;
         let triple_ids = source.triple_ids.clone();
-        
+
         self.sources.write()
             .map_err(|e| anyhow::anyhow!("Failed to acquire write lock on sources: {}", e))?
             .insert(id, source);
-        
+
         // Update reverse index: triple -> sources
         let mut triple_sources = self.triple_sources.write()
             .map_err(|e| anyhow::anyhow!("Failed to acquire write lock on triple_sources: {}", e))?;
@@ -173,7 +173,7 @@ impl TripleStore for MemoryStore {
                 .or_default()
                 .push(id);
         }
-        
+
         Ok(id)
     }
 
@@ -181,14 +181,14 @@ impl TripleStore for MemoryStore {
         let triple_sources = self.triple_sources.read()
             .map_err(|e| anyhow::anyhow!("Failed to acquire read lock on triple_sources: {}", e))?;
         let source_ids = triple_sources.get(&triple_id).cloned().unwrap_or_default();
-        
+
         let sources_map = self.sources.read()
             .map_err(|e| anyhow::anyhow!("Failed to acquire read lock on sources: {}", e))?;
         let sources: Vec<Source> = source_ids
             .iter()
             .filter_map(|id| sources_map.get(id).cloned())
             .collect();
-        
+
         Ok(sources)
     }
 
@@ -196,7 +196,7 @@ impl TripleStore for MemoryStore {
         if depth == 0 {
             return Ok(Vec::new());
         }
-        
+
         // Validate depth to prevent memory exhaustion
         if depth > 10 {
             anyhow::bail!("Depth cannot exceed 10 (too expensive)");
@@ -204,19 +204,19 @@ impl TripleStore for MemoryStore {
 
         let triples = self.triples.read()
             .map_err(|e| anyhow::anyhow!("Failed to acquire read lock on triples: {}", e))?;
-        
+
         // Find all triples where node_id is subject or object
         let mut result: Vec<Triple> = triples
             .values()
             .filter(|t| t.subject == node_id || t.object == node_id)
             .cloned()
             .collect();
-        
+
         // For depth > 1, recursively find neighbors
         if depth > 1 {
             let mut seen = std::collections::HashSet::new();
             seen.insert(node_id);
-            
+
             let mut current_level = result.clone();
             for _ in 1..depth {
                 let mut next_level = Vec::new();
@@ -241,8 +241,21 @@ impl TripleStore for MemoryStore {
                 current_level = next_level;
             }
         }
-        
+
         Ok(result)
+    }
+
+    async fn search_nodes(&self, query: &str, limit: usize) -> Result<Vec<Node>> {
+        let nodes = self.nodes.read()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire read lock on nodes: {}", e))?;
+        let query_lower = query.to_lowercase();
+        let results: Vec<Node> = nodes
+            .values()
+            .filter(|n| n.value.to_lowercase().contains(&query_lower))
+            .take(limit)
+            .cloned()
+            .collect();
+        Ok(results)
     }
 
     async fn count_triples(&self) -> Result<u64> {
@@ -265,18 +278,16 @@ impl TripleStore for MemoryStore {
         if min_weight < 0.0 {
             anyhow::bail!("Min weight cannot be negative");
         }
-        
+
         let mut triples = self.triples.write()
             .map_err(|e| anyhow::anyhow!("Failed to acquire write lock on triples: {}", e))?;
         let mut decayed_count = 0u64;
-        
+
         for triple in triples.values_mut() {
-            triple.weight *= factor;
-            // Don't clamp to min_weight - let it decay naturally
-            // evict_below_weight() will handle removal later
+            triple.local_weight *= factor;
             decayed_count += 1;
         }
-        
+
         Ok(decayed_count)
     }
 
@@ -285,13 +296,13 @@ impl TripleStore for MemoryStore {
         if threshold < 0.0 {
             anyhow::bail!("Eviction threshold cannot be negative");
         }
-        
+
         let mut triples = self.triples.write()
             .map_err(|e| anyhow::anyhow!("Failed to acquire write lock on triples: {}", e))?;
         let initial_count = triples.len();
-        
-        triples.retain(|_, triple| triple.weight >= threshold);
-        
+
+        triples.retain(|_, triple| triple.local_weight >= threshold);
+
         let evicted = initial_count - triples.len();
         Ok(evicted as u64)
     }
@@ -307,7 +318,7 @@ mod tests {
         let store = MemoryStore::new();
         let node = Node::new("test_value");
         let id = store.insert_node(node.clone()).await.unwrap();
-        
+
         let retrieved = store.get_node(id).await.unwrap();
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().value, "test_value");
@@ -318,11 +329,11 @@ mod tests {
         let store = MemoryStore::new();
         let node = Node::new("unique_value");
         store.insert_node(node.clone()).await.unwrap();
-        
+
         let found = store.find_node_by_value("unique_value").await.unwrap();
         assert!(found.is_some());
         assert_eq!(found.unwrap().value, "unique_value");
-        
+
         let not_found = store.find_node_by_value("nonexistent").await.unwrap();
         assert!(not_found.is_none());
     }
@@ -330,10 +341,10 @@ mod tests {
     #[tokio::test]
     async fn test_find_or_create_node() {
         let store = MemoryStore::new();
-        
+
         let node1 = store.find_or_create_node("test").await.unwrap();
         let node2 = store.find_or_create_node("test").await.unwrap();
-        
+
         assert_eq!(node1.id, node2.id);
         assert_eq!(store.count_nodes().await.unwrap(), 1);
     }
@@ -341,15 +352,15 @@ mod tests {
     #[tokio::test]
     async fn test_insert_and_query_triples() {
         let store = MemoryStore::new();
-        
+
         let subj = Node::new("Alice");
         let obj = Node::new("Bob");
         let subj_id = store.insert_node(subj).await.unwrap();
         let obj_id = store.insert_node(obj).await.unwrap();
-        
+
         let triple = Triple::new(subj_id, "knows", obj_id);
         let triple_id = store.insert_triple(triple).await.unwrap();
-        
+
         // Query by subject
         let pattern = TriplePattern {
             subject: Some(subj_id),
@@ -359,7 +370,7 @@ mod tests {
         let results = store.query_triples(pattern).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, triple_id);
-        
+
         // Query by predicate
         let pattern = TriplePattern {
             subject: None,
@@ -368,7 +379,7 @@ mod tests {
         };
         let results = store.query_triples(pattern).await.unwrap();
         assert_eq!(results.len(), 1);
-        
+
         // Query by object
         let pattern = TriplePattern {
             subject: None,
@@ -382,47 +393,47 @@ mod tests {
     #[tokio::test]
     async fn test_touch_triple() {
         let store = MemoryStore::new();
-        
+
         let subj = Node::new("A");
         let obj = Node::new("B");
         let subj_id = store.insert_node(subj).await.unwrap();
         let obj_id = store.insert_node(obj).await.unwrap();
-        
+
         let triple = Triple::new(subj_id, "rel", obj_id);
         let triple_id = triple.id;
         store.insert_triple(triple).await.unwrap();
-        
+
         let before = store.get_triple(triple_id).await.unwrap().unwrap();
         let access_count_before = before.access_count;
-        
+
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        
+
         store.touch_triple(triple_id).await.unwrap();
-        
+
         let after = store.get_triple(triple_id).await.unwrap().unwrap();
         assert_eq!(after.access_count, access_count_before + 1);
         assert!(after.last_accessed > before.last_accessed);
-        assert_eq!(after.weight, 1.0);
+        assert_eq!(after.local_weight, 1.0);
     }
 
     #[tokio::test]
     async fn test_neighbors() {
         let store = MemoryStore::new();
-        
+
         let alice = store.find_or_create_node("Alice").await.unwrap();
         let bob = store.find_or_create_node("Bob").await.unwrap();
         let carol = store.find_or_create_node("Carol").await.unwrap();
-        
+
         let t1 = Triple::new(alice.id, "knows", bob.id);
         let t2 = Triple::new(bob.id, "knows", carol.id);
-        
+
         store.insert_triple(t1.clone()).await.unwrap();
         store.insert_triple(t2.clone()).await.unwrap();
-        
+
         // Depth 1: Alice knows Bob
         let neighbors = store.neighbors(alice.id, 1).await.unwrap();
         assert_eq!(neighbors.len(), 1);
-        
+
         // Depth 2: Alice -> Bob -> Carol
         let neighbors = store.neighbors(alice.id, 2).await.unwrap();
         assert_eq!(neighbors.len(), 2);
@@ -431,27 +442,27 @@ mod tests {
     #[tokio::test]
     async fn test_decay_and_eviction() {
         let store = MemoryStore::new();
-        
+
         let a = store.find_or_create_node("A").await.unwrap();
         let b = store.find_or_create_node("B").await.unwrap();
-        
+
         let triple = Triple::new(a.id, "rel", b.id);
         store.insert_triple(triple.clone()).await.unwrap();
-        
-        // Initial weight should be 1.0
+
+        // Initial local_weight should be 1.0
         let t = store.get_triple(triple.id).await.unwrap().unwrap();
-        assert_eq!(t.weight, 1.0);
-        
+        assert_eq!(t.local_weight, 1.0);
+
         // Decay by 0.5
         store.decay(0.5, 0.0).await.unwrap();
         let t = store.get_triple(triple.id).await.unwrap().unwrap();
-        assert_eq!(t.weight, 0.5);
-        
+        assert_eq!(t.local_weight, 0.5);
+
         // Decay again
         store.decay(0.5, 0.0).await.unwrap();
         let t = store.get_triple(triple.id).await.unwrap().unwrap();
-        assert_eq!(t.weight, 0.25);
-        
+        assert_eq!(t.local_weight, 0.25);
+
         // Evict below 0.3
         let evicted = store.evict_below_weight(0.3).await.unwrap();
         assert_eq!(evicted, 1);
@@ -461,18 +472,18 @@ mod tests {
     #[tokio::test]
     async fn test_source_tracking() {
         let store = MemoryStore::new();
-        
+
         let a = store.find_or_create_node("A").await.unwrap();
         let b = store.find_or_create_node("B").await.unwrap();
-        
+
         let triple = Triple::new(a.id, "rel", b.id);
         let triple_id = store.insert_triple(triple).await.unwrap();
-        
+
         let source = Source::new(vec![triple_id], SourceType::UserInput)
             .with_reference("user-123");
-        
+
         store.insert_source(source.clone()).await.unwrap();
-        
+
         let sources = store.get_sources_for_triple(triple_id).await.unwrap();
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].source_type, SourceType::UserInput);
@@ -484,15 +495,15 @@ mod tests {
     #[tokio::test]
     async fn test_query_all_wildcard() {
         let store = MemoryStore::new();
-        
+
         let a = store.find_or_create_node("A").await.unwrap();
         let b = store.find_or_create_node("B").await.unwrap();
         let c = store.find_or_create_node("C").await.unwrap();
-        
+
         store.insert_triple(Triple::new(a.id, "rel1", b.id)).await.unwrap();
         store.insert_triple(Triple::new(b.id, "rel2", c.id)).await.unwrap();
         store.insert_triple(Triple::new(c.id, "rel3", a.id)).await.unwrap();
-        
+
         // Query with all wildcards should return all triples
         let pattern = TriplePattern {
             subject: None,
@@ -504,37 +515,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_insert_duplicate_triple() {
+    async fn test_insert_duplicate_triple_is_idempotent() {
         let store = MemoryStore::new();
-        
+
         let a = store.find_or_create_node("A").await.unwrap();
         let b = store.find_or_create_node("B").await.unwrap();
-        
-        // Insert same triple twice (different IDs since Triple::new generates new UUIDs)
+
+        // Insert same triple twice — content-addressable IDs mean same (S,P,O) = same ID
         let triple1 = Triple::new(a.id, "knows", b.id);
         let triple2 = Triple::new(a.id, "knows", b.id);
-        
+
         let id1 = store.insert_triple(triple1).await.unwrap();
         let id2 = store.insert_triple(triple2).await.unwrap();
-        
-        // Both should be stored (different IDs)
-        assert_ne!(id1, id2);
-        assert_eq!(store.count_triples().await.unwrap(), 2);
-        
-        // Query should return both
+
+        // Same content produces same ID (content-addressed)
+        assert_eq!(id1, id2);
+        // Second insert overwrites the first — only one triple stored
+        assert_eq!(store.count_triples().await.unwrap(), 1);
+
+        // Query should return one
         let pattern = TriplePattern {
             subject: Some(a.id),
             predicate: Some("knows".to_string()),
             object: Some(b.id),
         };
         let results = store.query_triples(pattern).await.unwrap();
-        assert_eq!(results.len(), 2);
+        assert_eq!(results.len(), 1);
     }
 
     #[tokio::test]
     async fn test_delete_nonexistent_triple() {
         let store = MemoryStore::new();
-        
+
         // Try to delete a triple that doesn't exist (should not error)
         let fake_id = uuid::Uuid::new_v4();
         let result = store.delete_triple(fake_id).await;
@@ -544,7 +556,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_nonexistent_node() {
         let store = MemoryStore::new();
-        
+
         // Try to get a node that doesn't exist
         let fake_id = uuid::Uuid::new_v4();
         let result = store.get_node(fake_id).await.unwrap();
@@ -554,13 +566,13 @@ mod tests {
     #[tokio::test]
     async fn test_decay_with_factor_greater_than_one() {
         let store = MemoryStore::new();
-        
+
         let a = store.find_or_create_node("A").await.unwrap();
         let b = store.find_or_create_node("B").await.unwrap();
-        
+
         let triple = Triple::new(a.id, "rel", b.id);
         store.insert_triple(triple.clone()).await.unwrap();
-        
+
         // Decay with factor > 1.0 should be rejected (validation added in code review)
         let result = store.decay(1.5, 0.0).await;
         assert!(result.is_err());
@@ -569,16 +581,16 @@ mod tests {
     #[tokio::test]
     async fn test_evict_with_threshold_zero() {
         let store = MemoryStore::new();
-        
+
         let a = store.find_or_create_node("A").await.unwrap();
         let b = store.find_or_create_node("B").await.unwrap();
-        
+
         let triple = Triple::new(a.id, "rel", b.id);
         store.insert_triple(triple).await.unwrap();
-        
+
         // Decay to very small weight
         store.decay(0.001, 0.0).await.unwrap();
-        
+
         // Evict with threshold 0.0 should evict nothing (weights are >= 0.0)
         let evicted = store.evict_below_weight(0.0).await.unwrap();
         assert_eq!(evicted, 0);
@@ -588,14 +600,14 @@ mod tests {
     #[tokio::test]
     async fn test_evict_with_threshold_above_one() {
         let store = MemoryStore::new();
-        
+
         let a = store.find_or_create_node("A").await.unwrap();
         let b = store.find_or_create_node("B").await.unwrap();
-        
+
         let triple = Triple::new(a.id, "rel", b.id);
         store.insert_triple(triple).await.unwrap();
-        
-        // Evict with threshold > 1.0 should evict everything (initial weight is 1.0)
+
+        // Evict with threshold > 1.0 should evict everything (initial local_weight is 1.0)
         let evicted = store.evict_below_weight(1.1).await.unwrap();
         assert_eq!(evicted, 1);
         assert_eq!(store.count_triples().await.unwrap(), 0);
@@ -604,9 +616,9 @@ mod tests {
     #[tokio::test]
     async fn test_large_batch_insert() {
         let store = MemoryStore::new();
-        
+
         let a = store.find_or_create_node("A").await.unwrap();
-        
+
         // Insert 1000+ triples
         let mut triple_ids = Vec::new();
         for i in 0..1500 {
@@ -615,10 +627,10 @@ mod tests {
             let id = store.insert_triple(triple).await.unwrap();
             triple_ids.push(id);
         }
-        
+
         // Verify count
         assert_eq!(store.count_triples().await.unwrap(), 1500);
-        
+
         // Verify we can query them
         let pattern = TriplePattern {
             subject: Some(a.id),
@@ -627,7 +639,7 @@ mod tests {
         };
         let results = store.query_triples(pattern).await.unwrap();
         assert_eq!(results.len(), 1500);
-        
+
         // Verify we can retrieve each triple
         for id in triple_ids.iter().take(10) {
             let triple = store.get_triple(*id).await.unwrap();
@@ -638,12 +650,12 @@ mod tests {
     #[tokio::test]
     async fn test_neighbors_depth_zero() {
         let store = MemoryStore::new();
-        
+
         let a = store.find_or_create_node("A").await.unwrap();
         let b = store.find_or_create_node("B").await.unwrap();
-        
+
         store.insert_triple(Triple::new(a.id, "knows", b.id)).await.unwrap();
-        
+
         // Depth 0 should return empty
         let neighbors = store.neighbors(a.id, 0).await.unwrap();
         assert_eq!(neighbors.len(), 0);
@@ -652,17 +664,81 @@ mod tests {
     #[tokio::test]
     async fn test_find_or_create_node_idempotency() {
         let store = MemoryStore::new();
-        
+
         // Call find_or_create multiple times with same value
         let node1 = store.find_or_create_node("test_value").await.unwrap();
         let node2 = store.find_or_create_node("test_value").await.unwrap();
         let node3 = store.find_or_create_node("test_value").await.unwrap();
-        
+
         // All should return the same node ID
         assert_eq!(node1.id, node2.id);
         assert_eq!(node2.id, node3.id);
-        
+
         // Should only have created one node
         assert_eq!(store.count_nodes().await.unwrap(), 1);
+    }
+
+    // === SEARCH NODES TESTS ===
+
+    #[tokio::test]
+    async fn test_search_nodes_basic() {
+        let store = MemoryStore::new();
+
+        store.find_or_create_node("Alice").await.unwrap();
+        store.find_or_create_node("Bob").await.unwrap();
+        store.find_or_create_node("Alice Smith").await.unwrap();
+        store.find_or_create_node("Carol").await.unwrap();
+
+        let results = store.search_nodes("alice", 10).await.unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|n| n.value.to_lowercase().contains("alice")));
+    }
+
+    #[tokio::test]
+    async fn test_search_nodes_case_insensitive() {
+        let store = MemoryStore::new();
+
+        store.find_or_create_node("Rust Programming").await.unwrap();
+        store.find_or_create_node("rust lang").await.unwrap();
+        store.find_or_create_node("RUST").await.unwrap();
+        store.find_or_create_node("Python").await.unwrap();
+
+        let results = store.search_nodes("rust", 10).await.unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_search_nodes_limit() {
+        let store = MemoryStore::new();
+
+        for i in 0..10 {
+            store.find_or_create_node(&format!("item_{}", i)).await.unwrap();
+        }
+
+        let results = store.search_nodes("item", 3).await.unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_search_nodes_no_match() {
+        let store = MemoryStore::new();
+
+        store.find_or_create_node("Alice").await.unwrap();
+        store.find_or_create_node("Bob").await.unwrap();
+
+        let results = store.search_nodes("xyz_no_match", 10).await.unwrap();
+        assert_eq!(results.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_search_nodes_empty_query() {
+        let store = MemoryStore::new();
+
+        store.find_or_create_node("Alice").await.unwrap();
+        store.find_or_create_node("Bob").await.unwrap();
+
+        // Empty string should match everything
+        let results = store.search_nodes("", 10).await.unwrap();
+        assert_eq!(results.len(), 2);
     }
 }

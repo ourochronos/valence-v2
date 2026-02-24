@@ -7,7 +7,7 @@ services:
       POSTGRES_USER: valence
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-valence_dev_password}
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - valence-postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -32,7 +32,7 @@ services:
       VALENCE_MODE: ${VALENCE_MODE:-http}
       RUST_LOG: ${RUST_LOG:-info}
     ports:
-      - "8421:8421"
+      - "127.0.0.1:8421:8421"
     depends_on:
       postgres:
         condition: service_healthy

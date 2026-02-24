@@ -3,7 +3,7 @@
 //! HTTP server exposing the triple store API.
 
 use anyhow::Result;
-#[cfg(feature = "postgres")]
+#[cfg(any(feature = "postgres", feature = "embedded"))]
 use anyhow::Context;
 use clap::Parser;
 use std::net::SocketAddr;
@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use tokio::signal;
 use tracing::{info, warn};
 
-use valence_engine::{api::create_router, ValenceEngine, EngineConfig};
+use valence_engine::{api::create_router_with_store_type, ValenceEngine, EngineConfig};
 
 /// Print startup banner with configuration summary
 fn print_startup_banner(config: &EngineConfig) {
@@ -34,6 +34,12 @@ fn print_startup_banner(config: &EngineConfig) {
     
     use valence_engine::config::StorageConfig;
     match &config.storage {
+        #[cfg(feature = "embedded")]
+        StorageConfig::Embedded { path, recompute_embeddings_on_start, embedding_dimensions } => {
+            info!("  Database:     Sled (embedded, persistent)");
+            info!("  Data path:    {}", path);
+            info!("  Auto-rehydrate embeddings: {} ({}d)", recompute_embeddings_on_start, embedding_dimensions);
+        }
         #[cfg(feature = "postgres")]
         StorageConfig::Postgres { url } => {
             info!("  Database:     PostgreSQL ({})", mask_password(url));
@@ -98,6 +104,10 @@ struct Args {
     /// PostgreSQL database URL (overrides config file)
     #[arg(long, env = "DATABASE_URL")]
     database_url: Option<String>,
+
+    /// Data directory for embedded sled storage (overrides config file)
+    #[arg(long, env = "VALENCE_DATA_DIR")]
+    data_dir: Option<String>,
 }
 
 #[tokio::main]
@@ -125,6 +135,10 @@ async fn main() -> Result<()> {
     if let Some(database_url) = args.database_url {
         apply_database_url(&mut config.storage, database_url);
     }
+    #[cfg(feature = "embedded")]
+    if let Some(data_dir) = args.data_dir {
+        apply_data_dir(&mut config.storage, data_dir);
+    }
     
     info!("Configuration loaded: mode={}, host={}, port={}", 
           config.server.mode, config.server.host, config.server.port);
@@ -139,11 +153,14 @@ async fn main() -> Result<()> {
     // Print engine status
     print_engine_status(&engine, &store_type).await?;
 
+    // Keep a reference to the store for flushing on shutdown
+    let store = engine.store.clone();
+
     // Run server based on mode
     match config.server.mode.as_str() {
         "http" => {
             info!("Starting in HTTP mode");
-            run_http_server(engine, &config).await?;
+            run_http_server(engine, &config, &store_type).await?;
         }
         "mcp" => {
             info!("Starting in MCP mode (stdio)");
@@ -151,7 +168,7 @@ async fn main() -> Result<()> {
         }
         "both" => {
             info!("Starting in both HTTP + MCP mode");
-            run_both_servers(engine, &config).await?;
+            run_both_servers(engine, &config, &store_type).await?;
         }
         mode => {
             return Err(anyhow::anyhow!(
@@ -159,6 +176,12 @@ async fn main() -> Result<()> {
                 mode
             ));
         }
+    }
+
+    // Flush storage before exit to ensure durability
+    info!("Flushing storage...");
+    if let Err(e) = store.flush().await {
+        warn!("Failed to flush storage on shutdown: {}", e);
     }
 
     info!("Server shut down gracefully");
@@ -184,6 +207,24 @@ fn apply_database_url(storage: &mut valence_engine::config::StorageConfig, datab
     }
 }
 
+#[cfg(feature = "embedded")]
+fn apply_data_dir(storage: &mut valence_engine::config::StorageConfig, data_dir: String) {
+    use valence_engine::config::StorageConfig;
+    match storage {
+        StorageConfig::Embedded { path, .. } => {
+            *path = data_dir;
+        }
+        _ => {
+            // Upgrade to embedded when data dir is provided
+            *storage = StorageConfig::Embedded {
+                path: data_dir,
+                recompute_embeddings_on_start: true,
+                embedding_dimensions: 64,
+            };
+        }
+    }
+}
+
 #[cfg(not(feature = "postgres"))]
 fn apply_database_url(_storage: &mut valence_engine::config::StorageConfig, _database_url: String) {
     warn!("DATABASE_URL provided but postgres feature not enabled");
@@ -191,10 +232,10 @@ fn apply_database_url(_storage: &mut valence_engine::config::StorageConfig, _dat
 }
 
 /// Run HTTP server only
-async fn run_http_server(engine: ValenceEngine, config: &EngineConfig) -> Result<()> {
+async fn run_http_server(engine: ValenceEngine, config: &EngineConfig, store_type: &str) -> Result<()> {
     // Create the API router
     info!("Creating API router...");
-    let app = create_router(engine);
+    let app = create_router_with_store_type(engine, store_type.to_string());
 
     // Parse address
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port).parse()?;
@@ -224,11 +265,11 @@ async fn run_mcp_server(engine: ValenceEngine) -> Result<()> {
 }
 
 /// Run both HTTP and MCP servers concurrently
-async fn run_both_servers(engine: ValenceEngine, config: &EngineConfig) -> Result<()> {
+async fn run_both_servers(engine: ValenceEngine, config: &EngineConfig, store_type: &str) -> Result<()> {
     use valence_engine::mcp::McpServer;
-    
+
     // Create the API router
-    let app = create_router(engine.clone());
+    let app = create_router_with_store_type(engine.clone(), store_type.to_string());
     
     // Parse address
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port).parse()?;
@@ -259,28 +300,74 @@ async fn run_both_servers(engine: ValenceEngine, config: &EngineConfig) -> Resul
 /// Returns (engine, store_type_description)
 async fn initialize_engine(storage_config: &valence_engine::config::StorageConfig) -> Result<(ValenceEngine, String)> {
     use valence_engine::config::StorageConfig;
-    
+
     match storage_config {
         StorageConfig::Memory => {
             info!("Using in-memory storage backend");
             warn!("Data will not persist after server restart");
             Ok((ValenceEngine::new(), "memory".to_string()))
         }
-        
+
+        #[cfg(feature = "embedded")]
+        StorageConfig::Embedded { path, recompute_embeddings_on_start, embedding_dimensions } => {
+            use valence_engine::storage::{SledStore, TripleStore};
+            use std::path::PathBuf;
+
+            let db_path = PathBuf::from(path);
+            info!("Initializing embedded sled storage at {:?}", db_path);
+
+            // Create parent directories if needed
+            if let Some(parent) = db_path.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("Failed to create data directory: {:?}", parent))?;
+            }
+
+            let store = SledStore::open(&db_path)
+                .context("Failed to open sled database")?;
+
+            // Check what we're restoring
+            let triple_count = store.count_triples().await?;
+            let node_count = store.count_nodes().await?;
+
+            if triple_count > 0 {
+                info!("Restored {} triples and {} nodes from sled", triple_count, node_count);
+            } else {
+                info!("Fresh sled database (no existing data)");
+            }
+
+            let engine = ValenceEngine::from_triple_store(store);
+
+            // Rehydrate embeddings from persisted triples
+            if *recompute_embeddings_on_start && triple_count > 0 {
+                info!("Recomputing embeddings from {} persisted triples ({} dimensions)...",
+                      triple_count, embedding_dimensions);
+                match engine.recompute_embeddings(*embedding_dimensions).await {
+                    Ok(count) => {
+                        info!("Embeddings rehydrated: {} node embeddings computed", count);
+                    }
+                    Err(e) => {
+                        warn!("Failed to recompute embeddings on startup: {}. Engine will run without embeddings.", e);
+                    }
+                }
+            }
+
+            Ok((engine, "sled (embedded)".to_string()))
+        }
+
         #[cfg(feature = "postgres")]
         StorageConfig::Postgres { url } => {
             info!("Initializing PostgreSQL storage backend");
             info!("Database URL: {}", mask_password(url));
-            
+
             use valence_engine::storage::PgStore;
             let store = PgStore::new(url)
                 .await
                 .context("Failed to initialize PostgreSQL store")?;
-            
+
             info!("PostgreSQL store initialized successfully");
             Ok((ValenceEngine::from_triple_store(store), "postgres".to_string()))
         }
-        
+
         #[cfg(feature = "postgres")]
         StorageConfig::Tiered {
             database_url,
@@ -293,15 +380,15 @@ async fn initialize_engine(storage_config: &valence_engine::config::StorageConfi
             info!("Initializing tiered storage backend (hot memory + cold PostgreSQL)");
             info!("Database URL: {}", mask_password(database_url));
             info!("Hot tier capacity: {} triples", hot_capacity);
-            
+
             use valence_engine::storage::PgStore;
             use valence_engine::tiered_store::{TieredStore, TieredConfig};
-            
+
             // Create cold tier (PostgreSQL)
             let cold_store = PgStore::new(database_url)
                 .await
                 .context("Failed to initialize PostgreSQL cold store")?;
-            
+
             // Create tiered config
             let tiered_config = TieredConfig {
                 hot_capacity: *hot_capacity,
@@ -311,10 +398,10 @@ async fn initialize_engine(storage_config: &valence_engine::config::StorageConfi
                 enable_cold_tier: true,
                 track_accesses: *track_accesses,
             };
-            
+
             // Create tiered store
             let store = TieredStore::new(cold_store, tiered_config);
-            
+
             info!("Tiered storage initialized successfully");
             Ok((ValenceEngine::from_triple_store(store), "tiered".to_string()))
         }

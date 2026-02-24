@@ -351,7 +351,7 @@ async fn test_full_e2e_pipeline() -> Result<()> {
     
     // Get weights before decay
     let triples_before_decay = engine.store.query_triples(TriplePattern::default()).await?;
-    let avg_weight_before: f64 = triples_before_decay.iter().map(|t| t.weight).sum::<f64>() 
+    let avg_weight_before: f64 = triples_before_decay.iter().map(|t| t.local_weight).sum::<f64>() 
         / triples_before_decay.len() as f64;
     println!("  • Average weight before decay: {:.3}", avg_weight_before);
     
@@ -362,7 +362,7 @@ async fn test_full_e2e_pipeline() -> Result<()> {
     
     // Get weights after decay
     let triples_after_decay = engine.store.query_triples(TriplePattern::default()).await?;
-    let avg_weight_after: f64 = triples_after_decay.iter().map(|t| t.weight).sum::<f64>() 
+    let avg_weight_after: f64 = triples_after_decay.iter().map(|t| t.local_weight).sum::<f64>() 
         / triples_after_decay.len() as f64;
     println!("  • Average weight after decay: {:.3}", avg_weight_after);
     
@@ -375,9 +375,9 @@ async fn test_full_e2e_pipeline() -> Result<()> {
     println!("\nPhase 9: Verifying low-value triple eviction...");
     
     // Count triples below various thresholds
-    let below_0_3: usize = triples_after_decay.iter().filter(|t| t.weight < 0.3).count();
-    let below_0_5: usize = triples_after_decay.iter().filter(|t| t.weight < 0.5).count();
-    let below_0_7: usize = triples_after_decay.iter().filter(|t| t.weight < 0.7).count();
+    let below_0_3: usize = triples_after_decay.iter().filter(|t| t.local_weight < 0.3).count();
+    let below_0_5: usize = triples_after_decay.iter().filter(|t| t.local_weight < 0.5).count();
+    let below_0_7: usize = triples_after_decay.iter().filter(|t| t.local_weight < 0.7).count();
     
     println!("  • {} triples below 0.3 weight", below_0_3);
     println!("  • {} triples below 0.5 weight", below_0_5);
@@ -411,8 +411,8 @@ async fn test_full_e2e_pipeline() -> Result<()> {
     println!("  ✓ Graph is still queryable ({} triples remain)", final_triples.len());
     
     // Verify all remaining triples have acceptable weights
-    let min_weight = final_triples.iter().map(|t| t.weight).fold(f64::INFINITY, f64::min);
-    let max_weight = final_triples.iter().map(|t| t.weight).fold(f64::NEG_INFINITY, f64::max);
+    let min_weight = final_triples.iter().map(|t| t.local_weight).fold(f64::INFINITY, f64::min);
+    let max_weight = final_triples.iter().map(|t| t.local_weight).fold(f64::NEG_INFINITY, f64::max);
     println!("  ✓ Weight range: [{:.3}, {:.3}]", min_weight, max_weight);
     assert!(min_weight >= 0.3, "All remaining triples should be above eviction threshold");
     

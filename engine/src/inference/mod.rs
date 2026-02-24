@@ -22,6 +22,8 @@
 
 pub mod feedback;
 pub mod weight_adjuster;
+pub mod blend_tuner;
 
 pub use feedback::{UsageFeedback, FeedbackSignal, FeedbackRecorder, FeedbackRecorderConfig};
 pub use weight_adjuster::{WeightAdjuster, WeightAdjusterConfig, AdjustmentStrategy};
+pub use blend_tuner::{BlendTuner, BlendTunerConfig, BlendWeights, EmbeddingAttribution};

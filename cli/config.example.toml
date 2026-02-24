@@ -1,0 +1,11 @@
+# Valence CLI Configuration
+# Place this file at ~/.config/valence/config.toml
+
+# Base URL for the Valence API
+api-url = "http://localhost:8421"
+
+# Authentication token (optional)
+# token = "your-auth-token-here"
+
+# Default output format: json, table, or plain
+output = "table"

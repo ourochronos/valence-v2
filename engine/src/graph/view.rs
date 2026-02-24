@@ -83,7 +83,7 @@ impl GraphView {
         // Add edge
         let edge_weight = EdgeWeight {
             predicate: triple.predicate.value.clone(),
-            weight: triple.weight,
+            weight: triple.effective_weight(),
         };
         self.graph.add_edge(subject_idx, object_idx, edge_weight);
     }

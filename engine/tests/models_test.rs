@@ -10,7 +10,8 @@ fn test_create_triple() {
     assert_eq!(triple.predicate.value, "is_a");
     assert_eq!(triple.subject, subject.id);
     assert_eq!(triple.object, object.id);
-    assert_eq!(triple.weight, 1.0);
+    assert_eq!(triple.base_weight, 1.0);
+    assert_eq!(triple.local_weight, 1.0);
     assert_eq!(triple.access_count, 0);
 }
 
@@ -19,9 +20,9 @@ fn test_touch_refreshes_weight() {
     let s = Node::new("A");
     let o = Node::new("B");
     let mut triple = Triple::new(s.id, "knows", o.id);
-    triple.weight = 0.5; // Simulate decay
+    triple.local_weight = 0.5; // Simulate decay
     triple.touch();
-    assert_eq!(triple.weight, 1.0);
+    assert_eq!(triple.local_weight, 1.0);
     assert_eq!(triple.access_count, 1);
 }
 

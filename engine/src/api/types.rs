@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::models::SourceType;
 use crate::query::FusionConfig;
+use crate::vkb::models::{SessionStatus, Platform};
 
 /// Request to insert one or more triples
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -59,10 +60,12 @@ pub struct TripleResponse {
     pub subject: NodeResponse,
     pub predicate: String,
     pub object: NodeResponse,
-    pub weight: f64,
-    pub created_at: DateTime<Utc>,
-    pub last_accessed: DateTime<Utc>,
+    pub base_weight: f64,
+    pub local_weight: f64,
+    pub timestamp: DateTime<Utc>,
+    pub last_accessed: Option<DateTime<Utc>>,
     pub access_count: u64,
+    pub origin_did: Option<String>,
     pub sources: Option<Vec<SourceResponse>>,
 }
 
@@ -546,10 +549,233 @@ pub struct FeedbackStatsParams {
 pub struct FeedbackStatsResponse {
     /// Triple ID
     pub triple_id: String,
-    
+
     /// Count of each signal type received
     pub signal_counts: std::collections::HashMap<String, usize>,
-    
+
     /// Total feedback events mentioning this triple
     pub total_feedback_count: usize,
 }
+
+// ========== VKB Types ==========
+
+/// Request to start a session
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionStartRequest {
+    pub platform: Platform,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_context: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_room_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// Response from starting a session
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionStartResponse {
+    pub id: String,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Request to end a session
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionEndRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub themes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<SessionStatus>,
+}
+
+/// Query parameters for listing sessions
+#[derive(Debug, Deserialize)]
+pub struct SessionListParams {
+    pub status: Option<SessionStatus>,
+    pub limit: Option<u32>,
+}
+
+/// Session response
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SessionResponse {
+    pub id: String,
+    pub platform: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_context: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_room_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub themes: Option<Vec<String>>,
+}
+
+/// Request to add an exchange
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ExchangeAddRequest {
+    pub role: String, // "user", "assistant", "system"
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens_approx: Option<i32>,
+}
+
+/// Exchange response
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ExchangeResponse {
+    pub id: String,
+    pub session_id: String,
+    pub role: String,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Query parameters for listing exchanges
+#[derive(Debug, Deserialize)]
+pub struct ExchangeListParams {
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
+
+/// Request to record a pattern
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PatternRecordRequest {
+    #[serde(rename = "type")]
+    pub pattern_type: String,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<Vec<String>>, // session IDs
+}
+
+/// Response from recording a pattern
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PatternRecordResponse {
+    pub id: String,
+}
+
+/// Query parameters for listing patterns
+#[derive(Debug, Deserialize)]
+pub struct PatternListParams {
+    pub status: Option<String>,
+    #[serde(rename = "type")]
+    pub pattern_type: Option<String>,
+    pub limit: Option<u32>,
+}
+
+/// Query parameters for searching patterns
+#[derive(Debug, Deserialize)]
+pub struct PatternSearchParams {
+    pub q: String,
+    pub limit: Option<u32>,
+}
+
+/// Pattern response
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PatternResponse {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub pattern_type: String,
+    pub description: String,
+    pub status: String,
+    pub confidence: f64,
+    pub evidence_count: i32,
+    pub reinforcement_count: i32,
+    pub created_at: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
+}
+
+/// Request to extract an insight
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct InsightExtractRequest {
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain_path: Option<Vec<String>>,
+}
+
+/// Insight response
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct InsightResponse {
+    pub id: String,
+    pub session_id: String,
+    pub content: String,
+    pub confidence: f64,
+    pub created_at: DateTime<Utc>,
+}
+
+// ========== Trust Types ==========
+
+/// Query parameters for trust query
+#[derive(Debug, Deserialize)]
+pub struct TrustQueryParams {
+    pub did: String,
+}
+
+/// Trust query response
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TrustQueryResponse {
+    pub did: String,
+    pub trust_score: f64,
+    pub connected_dids: Vec<TrustedEntity>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TrustedEntity {
+    pub did: String,
+    pub trust_score: f64,
+}
+
+/// Response for sign_triple
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SignTripleResponse {
+    pub triple_id: String,
+    pub signature: String, // base64-encoded
+    pub signer_did: String,
+}
+
+/// Response for verify_triple
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct VerifyTripleResponse {
+    pub triple_id: String,
+    pub valid: bool,
+    pub origin_did: Option<String>,
+}
+
+
+// ========== Knowledge Management Types ==========
+
+/// Request to supersede a triple
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SupersedeTripleRequest {
+    pub new_subject: String,
+    pub new_predicate: String,
+    pub new_object: String,
+    pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceInput>,
+}
+
+/// Query parameters for node search
+#[derive(Debug, Deserialize)]
+pub struct NodeSearchParams {
+    pub q: String,
+    #[serde(rename = "type")]
+    pub node_type: Option<String>,
+    pub limit: Option<u32>,
+}
+
+/// GET /triples/:id/confidence query params
+#[derive(Debug, Deserialize)]
+pub struct ConfidenceExplainParams {
+    /// Optional node value to use as query context for path diversity scoring
+    pub context: Option<String>,
+}
+

@@ -11,7 +11,7 @@ pub struct TriplePattern {
     pub object: Option<NodeId>,
 }
 
-/// The core storage interface. Implementations can be Kuzu, PostgreSQL, 
+/// The core storage interface. Implementations can be Kuzu, PostgreSQL,
 /// in-memory, or anything else. Clean interface enables swapping.
 #[async_trait]
 pub trait TripleStore: Send + Sync {
@@ -21,7 +21,7 @@ pub trait TripleStore: Send + Sync {
     async fn find_node_by_value(&self, value: &str) -> Result<Option<Node>>;
     async fn find_or_create_node(&self, value: &str) -> Result<Node>;
 
-    // Triple operations  
+    // Triple operations
     async fn insert_triple(&self, triple: Triple) -> Result<TripleId>;
     async fn get_triple(&self, id: TripleId) -> Result<Option<Triple>>;
     async fn update_triple(&self, triple: Triple) -> Result<()>;
@@ -38,7 +38,20 @@ pub trait TripleStore: Send + Sync {
     async fn count_triples(&self) -> Result<u64>;
     async fn count_nodes(&self) -> Result<u64>;
 
-    // Maintenance
+    // Search
+    /// Search nodes by case-insensitive substring match on value.
+    /// Default implementation returns an empty vec (override for indexed search).
+    async fn search_nodes(&self, _query: &str, _limit: usize) -> Result<Vec<Node>> {
+        Ok(Vec::new())
+    }
+
+    // Maintenance (operates on local_weight — base_weight comes from network)
     async fn decay(&self, factor: f64, min_weight: f64) -> Result<u64>;
     async fn evict_below_weight(&self, threshold: f64) -> Result<u64>;
+
+    /// Flush pending writes to durable storage.
+    /// Default is a no-op (suitable for memory/postgres backends).
+    async fn flush(&self) -> Result<()> {
+        Ok(())
+    }
 }

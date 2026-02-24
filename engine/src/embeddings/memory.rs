@@ -1,39 +1,61 @@
-//! In-memory embedding store with brute-force cosine similarity search.
+//! In-memory embedding store with HNSW-accelerated nearest neighbor search.
 //!
-//! This is a simple implementation for small to medium graphs.
-//! For larger graphs, consider using approximate nearest neighbor methods
-//! like HNSW or IVF, or vector databases like qdrant or milvus.
+//! Uses an HNSW index for O(log n) approximate nearest neighbor search when
+//! available, with automatic fallback to brute-force cosine similarity scan.
+//! The HNSW index is maintained incrementally as embeddings are inserted or updated.
 
 use std::collections::HashMap;
 use anyhow::{Result, bail};
 
 use crate::models::NodeId;
 use super::EmbeddingStore;
+use super::hnsw::HnswIndex;
 
-/// In-memory storage for node embeddings
-#[derive(Debug, Clone)]
+/// In-memory storage for node embeddings with optional HNSW acceleration.
+///
+/// The HNSW index is enabled by default and maintained alongside the HashMap.
+/// When `query_nearest` is called:
+/// - If the HNSW index has nodes, it is used for O(log n) search
+/// - Otherwise, falls back to brute-force O(n) scan
 pub struct MemoryEmbeddingStore {
     embeddings: HashMap<NodeId, Vec<f32>>,
     dimensions: Option<usize>,
+    /// HNSW index for accelerated nearest neighbor search.
+    hnsw_index: HnswIndex,
+    /// Whether to use the HNSW index (can be disabled for testing/comparison).
+    use_hnsw: bool,
 }
 
 impl MemoryEmbeddingStore {
-    /// Create a new empty embedding store
+    /// Create a new empty embedding store with HNSW acceleration enabled.
     pub fn new() -> Self {
         Self {
             embeddings: HashMap::new(),
             dimensions: None,
+            hnsw_index: HnswIndex::new(),
+            use_hnsw: true,
         }
     }
-    
-    /// Create a new embedding store from a pre-computed map
+
+    /// Create a new empty embedding store with HNSW explicitly disabled (brute-force only).
+    pub fn new_brute_force() -> Self {
+        Self {
+            embeddings: HashMap::new(),
+            dimensions: None,
+            hnsw_index: HnswIndex::new(),
+            use_hnsw: false,
+        }
+    }
+
+    /// Create a new embedding store from a pre-computed map.
+    /// Builds the HNSW index from the provided embeddings.
     pub fn from_embeddings(embeddings: HashMap<NodeId, Vec<f32>>) -> Result<Self> {
         // Validate that all embeddings have the same dimensionality
         let dimensions = embeddings
             .values()
             .next()
             .map(|v| v.len());
-        
+
         if let Some(dim) = dimensions {
             for (node_id, embedding) in &embeddings {
                 if embedding.len() != dim {
@@ -44,10 +66,18 @@ impl MemoryEmbeddingStore {
                 }
             }
         }
-        
+
+        // Build HNSW index from all embeddings
+        let mut hnsw_index = HnswIndex::new();
+        for (&node_id, embedding) in &embeddings {
+            hnsw_index.insert(node_id, embedding.clone());
+        }
+
         Ok(Self {
             embeddings,
             dimensions,
+            hnsw_index,
+            use_hnsw: true,
         })
     }
 }
@@ -72,20 +102,25 @@ impl EmbeddingStore for MemoryEmbeddingStore {
             // First embedding sets the dimensionality
             self.dimensions = Some(vector.len());
         }
-        
+
+        // Update HNSW index (handles both insert and update)
+        if self.use_hnsw {
+            self.hnsw_index.insert(node_id, vector.clone());
+        }
+
         self.embeddings.insert(node_id, vector);
         Ok(())
     }
-    
+
     fn get(&self, node_id: NodeId) -> Option<&Vec<f32>> {
         self.embeddings.get(&node_id)
     }
-    
+
     fn query_nearest(&self, query: &[f32], k: usize) -> Result<Vec<(NodeId, f32)>> {
         if self.embeddings.is_empty() {
             return Ok(Vec::new());
         }
-        
+
         // Check query dimensionality
         if let Some(expected_dim) = self.dimensions {
             if query.len() != expected_dim {
@@ -95,8 +130,29 @@ impl EmbeddingStore for MemoryEmbeddingStore {
                 );
             }
         }
-        
-        // Compute similarities for all nodes
+
+        // Use HNSW index if available and enabled
+        if self.use_hnsw && !self.hnsw_index.is_empty() {
+            return Ok(self.hnsw_index.search(query, k));
+        }
+
+        // Fallback: brute-force scan
+        self.brute_force_nearest(query, k)
+    }
+
+    fn all_embeddings(&self) -> HashMap<NodeId, Vec<f32>> {
+        self.embeddings.clone()
+    }
+
+    fn len(&self) -> usize {
+        self.embeddings.len()
+    }
+}
+
+impl MemoryEmbeddingStore {
+    /// Brute-force nearest neighbor search (O(n) scan).
+    /// Used as fallback when HNSW is not available.
+    fn brute_force_nearest(&self, query: &[f32], k: usize) -> Result<Vec<(NodeId, f32)>> {
         let mut similarities: Vec<(NodeId, f32)> = self.embeddings
             .iter()
             .map(|(&node_id, embedding)| {
@@ -104,24 +160,14 @@ impl EmbeddingStore for MemoryEmbeddingStore {
                 (node_id, similarity)
             })
             .collect();
-        
-        // Sort by similarity (descending)
+
         similarities.sort_by(|a, b| {
             b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
         });
-        
-        // Take top k
+
         similarities.truncate(k);
-        
+
         Ok(similarities)
-    }
-    
-    fn all_embeddings(&self) -> HashMap<NodeId, Vec<f32>> {
-        self.embeddings.clone()
-    }
-    
-    fn len(&self) -> usize {
-        self.embeddings.len()
     }
 }
 

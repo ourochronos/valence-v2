@@ -4,6 +4,7 @@
 //! Inference (LLM) exists only at the boundary: decomposing natural language to triples
 //! on write, recomposing triples to natural language on read.
 
+pub mod content_id;  // Content-addressable ID generation (blake3)
 pub mod error;       // Error types
 pub mod models;
 pub mod storage;
@@ -21,6 +22,11 @@ pub mod lifecycle;   // Knowledge lifecycle: structural decay + bounded memory
 pub mod query;       // Hybrid retrieval with multi-dimensional fusion scoring
 pub mod resilience;  // Graceful degradation and fallback strategies
 pub mod inference;   // Inference training loop: query patterns feed back to improve retrieval
+pub mod identity;    // Ed25519 keypairs for signing triples
+pub mod predicates;  // Well-known predicate constants
+pub mod vkb;         // Sessions, exchanges, patterns, insights
+#[cfg(feature = "federation")]
+pub mod federation;  // P2P via libp2p (gossipsub, kademlia, request-response)
 
 pub use error::{ValenceError, Result};
 pub use models::{Triple, Node, Source};
@@ -31,6 +37,10 @@ pub use graph::{GraphView, ConfidenceScore};
 pub use engine::ValenceEngine;
 pub use stigmergy::{AccessTracker, CoRetrievalEngine};
 pub use lifecycle::{LifecycleManager, DecayPolicy, MemoryBounds};
-pub use query::{FusionConfig, FusionScorer, RetrievalSignals};
+pub use query::{FusionConfig, FusionScorer, RetrievalSignals, EmbeddingBlendConfig, EmbeddingBlender, StrategyScores, CombinedQueryParams, CombinedQueryResponse, CombinedQueryResult, combined_query};
 pub use resilience::{ResilienceManager, DegradationLevel, DegradationWarning};
-pub use inference::{UsageFeedback, FeedbackSignal, FeedbackRecorder, WeightAdjuster, AdjustmentStrategy};
+pub use inference::{UsageFeedback, FeedbackSignal, FeedbackRecorder, WeightAdjuster, AdjustmentStrategy, BlendTuner, BlendTunerConfig, BlendWeights, EmbeddingAttribution};
+pub use identity::Keypair;
+pub use vkb::{Session, Exchange, Pattern, Insight, SessionStatus, ExchangeRole, PatternStatus, Platform, SessionStore};
+#[cfg(feature = "federation")]
+pub use federation::{FederationConfig, FederationManager, TrustThresholds, Peer, TrustPhase, PeerStore, InMemoryPeerStore, GossipMessage, TripleHeader, BloomSync};

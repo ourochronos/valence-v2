@@ -178,7 +178,7 @@ impl ResilientRetrieval {
         
         // Sort by weight (confidence proxy) and take top N
         let mut sorted = triples;
-        sorted.sort_by(|a, b| b.weight.partial_cmp(&a.weight).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(|a, b| b.local_weight.partial_cmp(&a.local_weight).unwrap_or(std::cmp::Ordering::Equal));
         
         // Extract IDs and limit
         let limited: Vec<_> = sorted.into_iter().map(|t| t.id).take(max_results).collect();

@@ -15,7 +15,23 @@ use crate::tiered_store::{PromotionPolicy, DemotionPolicy};
 pub enum StorageConfig {
     /// In-memory storage (ephemeral, no persistence)
     Memory,
-    
+
+    /// Embedded persistent storage via sled (requires `embedded` feature)
+    #[cfg(feature = "embedded")]
+    Embedded {
+        /// Path to the sled database directory
+        #[serde(default = "default_sled_path")]
+        path: String,
+
+        /// Recompute embeddings on startup from persisted triples
+        #[serde(default = "default_true")]
+        recompute_embeddings_on_start: bool,
+
+        /// Embedding dimensions for startup recomputation
+        #[serde(default = "default_embedding_dimensions")]
+        embedding_dimensions: usize,
+    },
+
     /// PostgreSQL storage (persistent)
     #[cfg(feature = "postgres")]
     Postgres {
@@ -23,30 +39,30 @@ pub enum StorageConfig {
         #[serde(default = "default_database_url")]
         url: String,
     },
-    
+
     /// Tiered storage (hot memory tier + cold persistent tier)
     #[cfg(feature = "postgres")]
     Tiered {
         /// Database connection URL for cold tier
         #[serde(default = "default_database_url")]
         database_url: String,
-        
+
         /// Maximum triples in hot tier (0 = unlimited)
         #[serde(default = "default_hot_capacity")]
         hot_capacity: usize,
-        
+
         /// Promotion policy
         #[serde(default)]
         promotion_policy: PromotionPolicyConfig,
-        
+
         /// Demotion policy
         #[serde(default)]
         demotion_policy: DemotionPolicyConfig,
-        
+
         /// Demotion sweep interval in seconds
         #[serde(default = "default_demotion_interval")]
         demotion_interval_secs: u64,
-        
+
         /// Track access patterns
         #[serde(default = "default_true")]
         track_accesses: bool,
@@ -55,8 +71,28 @@ pub enum StorageConfig {
 
 impl Default for StorageConfig {
     fn default() -> Self {
-        Self::Memory
+        // When embedded feature is enabled, default to persistent sled storage
+        #[cfg(feature = "embedded")]
+        {
+            Self::Embedded {
+                path: default_sled_path(),
+                recompute_embeddings_on_start: true,
+                embedding_dimensions: 64,
+            }
+        }
+        #[cfg(not(feature = "embedded"))]
+        {
+            Self::Memory
+        }
     }
+}
+
+#[cfg(feature = "embedded")]
+fn default_sled_path() -> String {
+    std::env::var("VALENCE_DATA_DIR").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        format!("{}/.local/share/valence/db", home)
+    })
 }
 
 #[cfg(feature = "postgres")]
@@ -801,6 +837,14 @@ impl EngineConfig {
             }
         }
         
+        // Sled data dir from env
+        #[cfg(feature = "embedded")]
+        if let Ok(data_dir) = std::env::var("VALENCE_DATA_DIR") {
+            if let StorageConfig::Embedded { path, .. } = &mut self.storage {
+                *path = data_dir;
+            }
+        }
+
         // Database URL from env (only if not already postgres/tiered)
         #[cfg(feature = "postgres")]
         if let Ok(database_url) = std::env::var("DATABASE_URL") {

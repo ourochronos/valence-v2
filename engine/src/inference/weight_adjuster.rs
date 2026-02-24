@@ -138,7 +138,7 @@ impl WeightAdjuster {
                 crate::error::StorageError::TripleNotFound(format!("Triple {} not found", triple_id))
             ))?;
 
-        let old_weight = triple.weight;
+        let old_weight = triple.local_weight;
 
         // Calculate new weight based on strategy
         let new_weight = match self.config.strategy {
@@ -158,11 +158,11 @@ impl WeightAdjuster {
         };
 
         // Clamp to configured bounds
-        triple.weight = new_weight.clamp(self.config.min_weight, self.config.max_weight);
+        triple.local_weight = new_weight.clamp(self.config.min_weight, self.config.max_weight);
 
         // Update timestamp and access count if positive feedback
         if self.config.update_timestamps && signal.is_positive() {
-            triple.last_accessed = Utc::now();
+            triple.last_accessed = Some(Utc::now());
             triple.access_count += 1;
         }
 
@@ -173,7 +173,7 @@ impl WeightAdjuster {
             triple_id,
             signal,
             old_weight,
-            new_weight: triple.weight,
+            new_weight: triple.local_weight,
         })
     }
 
@@ -333,7 +333,7 @@ mod tests {
         // Check that weight is clamped to max
         let store_lock = store.read().await;
         let triple = store_lock.get_triple(triple_id).await.unwrap().unwrap();
-        assert!(triple.weight <= 2.0);
+        assert!(triple.local_weight <= 2.0);
     }
 
     #[tokio::test]

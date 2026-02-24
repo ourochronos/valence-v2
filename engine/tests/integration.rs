@@ -295,7 +295,7 @@ async fn test_decay() {
 
     let body: serde_json::Value = response.json().await.unwrap();
     let triples = body["triples"].as_array().unwrap();
-    assert_eq!(triples[0]["weight"], 0.5);
+    assert_eq!(triples[0]["local_weight"], 0.5);
 }
 
 #[tokio::test]

@@ -8,6 +8,11 @@
 pub mod spectral;
 pub mod memory;
 pub mod node2vec;
+pub mod spring;
+pub mod hnsw;
+#[cfg(feature = "embedded")]
+pub mod mmap_store;
+pub mod strategy_selector;
 
 use std::collections::HashMap;
 use anyhow::Result;

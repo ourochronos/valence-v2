@@ -6,6 +6,7 @@ use axum::{
     Router,
 };
 use uuid::Uuid;
+use base64::Engine;
 
 use crate::{
     engine::ValenceEngine,
@@ -13,6 +14,7 @@ use crate::{
     graph::{GraphView, DynamicConfidence},
     models::{Source, Triple},
     storage::{MemoryStore, TriplePattern},
+    vkb::SessionStore,
 };
 
 mod types;
@@ -86,6 +88,31 @@ pub fn create_router_with_store_type(engine: ValenceEngine, store_type: String) 
         // Resilience / degradation
         .route("/resilience/status", get(get_degradation_status))
         .route("/resilience/reset", post(reset_degradation))
+        // VKB endpoints
+        .route("/sessions", post(create_session))
+        .route("/sessions", get(list_sessions))
+        .route("/sessions/{id}", get(get_session))
+        .route("/sessions/{id}/end", post(end_session))
+        .route("/sessions/room/{room_id}", get(find_session_by_room))
+        .route("/sessions/{id}/exchanges", post(add_exchange))
+        .route("/sessions/{id}/exchanges", get(list_exchanges))
+        .route("/patterns", post(record_pattern))
+        .route("/patterns/{id}/reinforce", post(reinforce_pattern))
+        .route("/patterns", get(list_patterns))
+        .route("/patterns/search", get(search_patterns))
+        .route("/sessions/{id}/insights", post(extract_insight))
+        .route("/sessions/{id}/insights", get(list_insights))
+        // Trust endpoints
+        .route("/trust", get(query_trust))
+        // Knowledge management endpoints
+        .route("/triples/{id}", get(get_triple_detail))
+        .route("/triples/{id}/supersede", post(supersede_triple))
+        .route("/triples/{id}/confidence", get(explain_confidence))
+        .route("/triples/{id}/sign", post(sign_triple))
+        .route("/triples/{id}/verify", get(verify_triple))
+        .route("/nodes/search", get(search_nodes))
+        // Combined query: connected AND similar
+        .route("/query/combined", post(combined_query))
         .with_state(state)
 }
 
@@ -301,10 +328,12 @@ async fn query_triples(
                 id: object_node.id.to_string(),
                 value: object_node.value,
             },
-            weight: triple.weight,
-            created_at: triple.created_at,
+            base_weight: triple.base_weight,
+            local_weight: triple.local_weight,
+            timestamp: triple.timestamp,
             last_accessed: triple.last_accessed,
             access_count: triple.access_count,
+            origin_did: triple.origin_did.clone(),
             sources,
         });
     }
@@ -366,10 +395,12 @@ async fn get_neighbors(
                 id: object_node.id.to_string(),
                 value: object_node.value,
             },
-            weight: triple.weight,
-            created_at: triple.created_at,
+            base_weight: triple.base_weight,
+            local_weight: triple.local_weight,
+            timestamp: triple.timestamp,
             last_accessed: triple.last_accessed,
             access_count: triple.access_count,
+            origin_did: triple.origin_did.clone(),
             sources: None,
         });
     }
@@ -422,7 +453,7 @@ async fn get_stats(State(state): State<ApiState>) -> Result<Json<StatsResponse>,
     // For large graphs, sample instead of loading everything
     let sample_size = triples.len().min(1000);
     let avg_weight = if sample_size > 0 {
-        triples.iter().take(sample_size).map(|t| t.weight).sum::<f64>() / sample_size as f64
+        triples.iter().take(sample_size).map(|t| t.local_weight).sum::<f64>() / sample_size as f64
     } else {
         0.0
     };
@@ -819,6 +850,15 @@ async fn get_lifecycle_status(
     }))
 }
 
+/// POST /query/combined — Connected AND similar: the killer query
+async fn combined_query(
+    State(state): State<ApiState>,
+    Json(params): Json<crate::query::combined::CombinedQueryParams>,
+) -> Result<Json<crate::query::combined::CombinedQueryResponse>, ApiError> {
+    let response = state.engine.combined_query(params).await?;
+    Ok(Json(response))
+}
+
 /// API error types
 #[derive(Debug)]
 pub enum ApiError {
@@ -955,6 +995,615 @@ async fn get_feedback_stats(
         triple_id: params.triple_id,
         signal_counts,
         total_feedback_count,
+    }))
+}
+
+// ========== VKB Endpoints ==========
+
+/// Helper to get the session store or return an error.
+fn get_session_store(state: &ApiState) -> Result<&std::sync::Arc<tokio::sync::RwLock<crate::vkb::memory::MemorySessionStore>>, ApiError> {
+    state.engine.session_store.as_ref()
+        .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("VKB session store not configured")))
+}
+
+/// Convert a Session model to a SessionResponse.
+fn session_to_response(s: &crate::vkb::models::Session) -> types::SessionResponse {
+    types::SessionResponse {
+        id: s.id.to_string(),
+        platform: s.platform.as_str().to_string(),
+        status: format!("{:?}", s.status).to_lowercase(),
+        project_context: s.project_context.clone(),
+        external_room_id: s.external_room_id.clone(),
+        created_at: s.created_at,
+        ended_at: s.ended_at,
+        summary: s.summary.clone(),
+        themes: if s.themes.is_empty() { None } else { Some(s.themes.clone()) },
+    }
+}
+
+/// POST /sessions — Create a new session
+async fn create_session(
+    State(state): State<ApiState>,
+    Json(req): Json<types::SessionStartRequest>,
+) -> Result<Json<types::SessionStartResponse>, ApiError> {
+    let store = get_session_store(&state)?;
+    let store = store.read().await;
+
+    let mut session = crate::vkb::models::Session::new(req.platform);
+    session.project_context = req.project_context;
+    session.external_room_id = req.external_room_id;
+    if let Some(metadata) = req.metadata {
+        session.metadata = metadata;
+    }
+
+    let id = SessionStore::create_session(&*store, session.clone()).await?;
+
+    Ok(Json(types::SessionStartResponse {
+        id: id.to_string(),
+        status: "active".to_string(),
+        created_at: session.created_at,
+    }))
+}
+
+/// GET /sessions — List sessions
+async fn list_sessions(
+    State(state): State<ApiState>,
+    Query(params): Query<types::SessionListParams>,
+) -> Result<Json<Vec<types::SessionResponse>>, ApiError> {
+    let store = get_session_store(&state)?;
+    let store = store.read().await;
+
+    let sessions = SessionStore::list_sessions(
+        &*store,
+        params.status,
+        None,
+        None,
+        params.limit.unwrap_or(20),
+    ).await?;
+
+    Ok(Json(sessions.iter().map(session_to_response).collect()))
+}
+
+/// GET /sessions/:id — Get a session by ID
+async fn get_session(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<types::SessionResponse>, ApiError> {
+    let store = get_session_store(&state)?;
+    let store = store.read().await;
+    let uuid = id.parse::<Uuid>().map_err(|e| ApiError::BadRequest(format!("Invalid UUID: {}", e)))?;
+
+    let session = SessionStore::get_session(&*store, uuid).await?
+        .ok_or_else(|| ApiError::NotFound(format!("Session {} not found", id)))?;
+
+    Ok(Json(session_to_response(&session)))
+}
+
+/// POST /sessions/:id/end — End a session
+async fn end_session(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(req): Json<types::SessionEndRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = get_session_store(&state)?;
+    let store = store.read().await;
+    let uuid = id.parse::<Uuid>().map_err(|e| ApiError::BadRequest(format!("Invalid UUID: {}", e)))?;
+
+    let status = req.status.unwrap_or(crate::vkb::models::SessionStatus::Completed);
+    SessionStore::end_session(&*store, uuid, status, req.summary, req.themes).await?;
+
+    Ok(Json(serde_json::json!({
+        "id": id,
+        "status": format!("{:?}", status).to_lowercase(),
+    })))
+}
+
+/// GET /sessions/room/:room_id — Find session by room ID
+async fn find_session_by_room(
+    State(state): State<ApiState>,
+    Path(room_id): Path<String>,
+) -> Result<Json<types::SessionResponse>, ApiError> {
+    let store = get_session_store(&state)?;
+    let store = store.read().await;
+
+    let session = SessionStore::find_session_by_room(&*store, &room_id).await?
+        .ok_or_else(|| ApiError::NotFound(format!("No session found for room {}", room_id)))?;
+
+    Ok(Json(session_to_response(&session)))
+}
+
+/// POST /sessions/:id/exchanges — Add an exchange to a session
+async fn add_exchange(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(req): Json<types::ExchangeAddRequest>,
+) -> Result<Json<types::ExchangeResponse>, ApiError> {
+    let store = get_session_store(&state)?;
+    let store = store.read().await;
+    let session_id = id.parse::<Uuid>().map_err(|e| ApiError::BadRequest(format!("Invalid UUID: {}", e)))?;
+
+    let role = match req.role.to_lowercase().as_str() {
+        "user" => crate::vkb::models::ExchangeRole::User,
+        "assistant" => crate::vkb::models::ExchangeRole::Assistant,
+        "system" => crate::vkb::models::ExchangeRole::System,
+        _ => return Err(ApiError::BadRequest(format!("Invalid role: {}", req.role))),
+    };
+
+    let mut exchange = crate::vkb::models::Exchange::new(session_id, role, &req.content);
+    exchange.tokens_approx = req.tokens_approx;
+
+    let exchange_id = SessionStore::add_exchange(&*store, exchange.clone()).await?;
+
+    Ok(Json(types::ExchangeResponse {
+        id: exchange_id.to_string(),
+        session_id: session_id.to_string(),
+        role: req.role,
+        content: req.content,
+        created_at: exchange.created_at,
+    }))
+}
+
+/// GET /sessions/:id/exchanges — List exchanges for a session
+async fn list_exchanges(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Query(params): Query<types::ExchangeListParams>,
+) -> Result<Json<Vec<types::ExchangeResponse>>, ApiError> {
+    let store = get_session_store(&state)?;
+    let store = store.read().await;
+    let session_id = id.parse::<Uuid>().map_err(|e| ApiError::BadRequest(format!("Invalid UUID: {}", e)))?;
+
+    let exchanges = SessionStore::list_exchanges(
+        &*store,
+        session_id,
+        params.limit.unwrap_or(20),
+        params.offset.unwrap_or(0),
+    ).await?;
+
+    Ok(Json(exchanges.iter().map(|e| types::ExchangeResponse {
+        id: e.id.to_string(),
+        session_id: e.session_id.to_string(),
+        role: format!("{:?}", e.role).to_lowercase(),
+        content: e.content.clone(),
+        created_at: e.created_at,
+    }).collect()))
+}
+
+/// POST /patterns — Record a new pattern
+async fn record_pattern(
+    State(state): State<ApiState>,
+    Json(req): Json<types::PatternRecordRequest>,
+) -> Result<Json<types::PatternRecordResponse>, ApiError> {
+    let store = get_session_store(&state)?;
+    let store = store.read().await;
+
+    let mut pattern = crate::vkb::models::Pattern::new(&req.pattern_type, &req.description);
+    if let Some(conf) = req.confidence {
+        pattern.confidence = conf;
+    }
+    if let Some(evidence) = req.evidence {
+        pattern.evidence_session_ids = evidence.iter()
+            .filter_map(|s| s.parse::<Uuid>().ok())
+            .collect();
+    }
+
+    let id = SessionStore::record_pattern(&*store, pattern).await?;
+
+    Ok(Json(types::PatternRecordResponse {
+        id: id.to_string(),
+    }))
+}
+
+/// POST /patterns/:id/reinforce — Reinforce a pattern
+async fn reinforce_pattern(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = get_session_store(&state)?;
+    let store = store.read().await;
+    let pattern_id = id.parse::<Uuid>().map_err(|e| ApiError::BadRequest(format!("Invalid UUID: {}", e)))?;
+
+    SessionStore::reinforce_pattern(&*store, pattern_id, None).await?;
+
+    Ok(Json(serde_json::json!({
+        "id": id,
+        "reinforced": true,
+    })))
+}
+
+/// GET /patterns — List patterns
+async fn list_patterns(
+    State(state): State<ApiState>,
+    Query(params): Query<types::PatternListParams>,
+) -> Result<Json<Vec<types::PatternResponse>>, ApiError> {
+    let store = get_session_store(&state)?;
+    let store = store.read().await;
+
+    let patterns = SessionStore::list_patterns(
+        &*store,
+        params.status.as_deref(),
+        params.pattern_type.as_deref(),
+        params.limit.unwrap_or(20),
+    ).await?;
+
+    Ok(Json(patterns.iter().map(pattern_to_response).collect()))
+}
+
+/// GET /patterns/search — Search patterns
+async fn search_patterns(
+    State(state): State<ApiState>,
+    Query(params): Query<types::PatternSearchParams>,
+) -> Result<Json<Vec<types::PatternResponse>>, ApiError> {
+    let store = get_session_store(&state)?;
+    let store = store.read().await;
+
+    let patterns = SessionStore::search_patterns(
+        &*store,
+        &params.q,
+        params.limit.unwrap_or(20),
+    ).await?;
+
+    Ok(Json(patterns.iter().map(pattern_to_response).collect()))
+}
+
+/// Convert a Pattern model to a PatternResponse.
+fn pattern_to_response(p: &crate::vkb::models::Pattern) -> types::PatternResponse {
+    types::PatternResponse {
+        id: p.id.to_string(),
+        pattern_type: p.pattern_type.clone(),
+        description: p.description.clone(),
+        status: format!("{:?}", p.status).to_lowercase(),
+        confidence: p.confidence,
+        evidence_count: p.evidence_session_ids.len() as i32,
+        reinforcement_count: 0, // Pattern model doesn't track this separately
+        created_at: p.created_at,
+        last_seen: p.updated_at,
+    }
+}
+
+/// POST /sessions/:id/insights — Extract an insight from a session
+async fn extract_insight(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(req): Json<types::InsightExtractRequest>,
+) -> Result<Json<types::InsightResponse>, ApiError> {
+    let store = get_session_store(&state)?;
+    let store = store.read().await;
+    let session_id = id.parse::<Uuid>().map_err(|e| ApiError::BadRequest(format!("Invalid UUID: {}", e)))?;
+
+    let mut insight = crate::vkb::models::Insight::new(session_id, &req.content);
+    if let Some(domain_path) = req.domain_path {
+        insight.domain_path = domain_path;
+    }
+
+    let insight_id = SessionStore::extract_insight(&*store, insight.clone()).await?;
+
+    Ok(Json(types::InsightResponse {
+        id: insight_id.to_string(),
+        session_id: session_id.to_string(),
+        content: req.content,
+        confidence: req.confidence.unwrap_or(0.8),
+        created_at: insight.created_at,
+    }))
+}
+
+/// GET /sessions/:id/insights — List insights for a session
+async fn list_insights(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<types::InsightResponse>>, ApiError> {
+    let store = get_session_store(&state)?;
+    let store = store.read().await;
+    let session_id = id.parse::<Uuid>().map_err(|e| ApiError::BadRequest(format!("Invalid UUID: {}", e)))?;
+
+    let insights = SessionStore::list_insights(&*store, session_id).await?;
+
+    Ok(Json(insights.iter().map(|i| types::InsightResponse {
+        id: i.id.to_string(),
+        session_id: i.session_id.to_string(),
+        content: i.content.clone(),
+        confidence: 0.8, // Insight model doesn't have confidence field
+        created_at: i.created_at,
+    }).collect()))
+}
+
+// ========== Trust Endpoints ==========
+
+/// GET /trust?did=X — Query trust score using PageRank
+async fn query_trust(
+    State(state): State<ApiState>,
+    Query(params): Query<types::TrustQueryParams>,
+) -> Result<Json<types::TrustQueryResponse>, ApiError> {
+    use crate::graph::{GraphView, algorithms::pagerank};
+
+    // Build graph view
+    let graph = GraphView::from_store(&*state.engine.store).await?;
+
+    // Run PageRank on the graph
+    let ranks = pagerank(&graph, 0.85, 50);
+
+    // Find the DID node
+    let did_node = state.engine.store.find_node_by_value(&params.did).await?
+        .ok_or_else(|| ApiError::NotFound(format!("DID not found: {}", params.did)))?;
+
+    let trust_score = ranks.get(&did_node.id).copied().unwrap_or(0.0);
+
+    // Get connected DIDs (nodes with "trusts" edges)
+    let pattern = TriplePattern {
+        subject: Some(did_node.id),
+        predicate: Some(crate::predicates::TRUSTS.to_string()),
+        object: None,
+    };
+    let triples = state.engine.store.query_triples(pattern).await?;
+
+    let mut connected_dids = Vec::new();
+    for triple in triples {
+        let object_node = state.engine.store.get_node(triple.object).await?
+            .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("Object node not found")))?;
+        let score = ranks.get(&object_node.id).copied().unwrap_or(0.0);
+        connected_dids.push(types::TrustedEntity {
+            did: object_node.value,
+            trust_score: score,
+        });
+    }
+
+    Ok(Json(types::TrustQueryResponse {
+        did: params.did,
+        trust_score,
+        connected_dids,
+    }))
+}
+
+// ========== Knowledge Management Endpoints ==========
+
+/// GET /triples/:id — Get a single triple with full details
+async fn get_triple_detail(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<TripleResponse>, ApiError> {
+    let triple_id = Uuid::parse_str(&id)
+        .map_err(|_| ApiError::BadRequest(format!("Invalid triple ID: {}", id)))?;
+
+    let triple = state.engine.store.get_triple(triple_id).await?
+        .ok_or_else(|| ApiError::NotFound(format!("Triple not found: {}", id)))?;
+
+    let subject_node = state.engine.store.get_node(triple.subject).await?
+        .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("Subject node not found: {:?}", triple.subject)))?;
+    let object_node = state.engine.store.get_node(triple.object).await?
+        .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("Object node not found: {:?}", triple.object)))?;
+
+    let sources = state.engine.store.get_sources_for_triple(triple.id).await?;
+    let source_responses: Vec<SourceResponse> = sources
+        .into_iter()
+        .map(|s| SourceResponse {
+            id: s.id.to_string(),
+            source_type: s.source_type,
+            reference: s.reference,
+            created_at: s.created_at,
+        })
+        .collect();
+
+    Ok(Json(TripleResponse {
+        id: triple.id.to_string(),
+        subject: NodeResponse {
+            id: subject_node.id.to_string(),
+            value: subject_node.value,
+        },
+        predicate: triple.predicate.value,
+        object: NodeResponse {
+            id: object_node.id.to_string(),
+            value: object_node.value,
+        },
+        origin_did: triple.origin_did.clone(),
+        base_weight: triple.base_weight,
+        local_weight: triple.local_weight,
+        timestamp: triple.timestamp,
+        last_accessed: triple.last_accessed,
+        access_count: triple.access_count,
+        sources: Some(source_responses),
+    }))
+}
+
+/// GET /triples/:id/confidence — Explain dynamic confidence score for a triple
+async fn explain_confidence(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Query(params): Query<types::ConfidenceExplainParams>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let triple_id = Uuid::parse_str(&id)
+        .map_err(|_| ApiError::BadRequest(format!("Invalid triple ID: {}", id)))?;
+
+    // Verify triple exists
+    let triple = state.engine.store.get_triple(triple_id).await?
+        .ok_or_else(|| ApiError::NotFound(format!("Triple not found: {}", id)))?;
+
+    // Resolve optional query context node
+    let query_context = if let Some(ref ctx) = params.context {
+        state.engine.store.find_node_by_value(ctx).await?.map(|n| n.id)
+    } else {
+        None
+    };
+
+    // Build graph view and compute confidence
+    let graph_view = GraphView::from_store(&*state.engine.store).await?;
+    let score = DynamicConfidence::compute_confidence(
+        &*state.engine.store,
+        &graph_view,
+        triple_id,
+        query_context,
+    ).await?;
+
+    // Get source count for the breakdown
+    let sources = state.engine.store.get_sources_for_triple(triple_id).await?;
+
+    // Get subject/object node values
+    let subject_node = state.engine.store.get_node(triple.subject).await?;
+    let object_node = state.engine.store.get_node(triple.object).await?;
+
+    Ok(Json(serde_json::json!({
+        "triple_id": id,
+        "subject": subject_node.map(|n| n.value),
+        "predicate": triple.predicate.value,
+        "object": object_node.map(|n| n.value),
+        "confidence": {
+            "combined": score.combined,
+            "source_reliability": score.source_reliability,
+            "path_diversity": score.path_diversity,
+            "centrality": score.centrality,
+        },
+        "weights": {
+            "source_reliability": 0.5,
+            "path_diversity": 0.3,
+            "centrality": 0.2,
+        },
+        "details": {
+            "source_count": sources.len(),
+            "query_context": params.context,
+        }
+    })))
+}
+
+/// POST /triples/:id/supersede — Supersede a triple with a new one
+async fn supersede_triple(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    Json(req): Json<types::SupersedeTripleRequest>,
+) -> Result<Json<InsertTriplesResponse>, ApiError> {
+    let old_triple_id = Uuid::parse_str(&id)
+        .map_err(|_| ApiError::BadRequest(format!("Invalid triple ID: {}", id)))?;
+
+    // Verify old triple exists
+    state.engine.store.get_triple(old_triple_id).await?
+        .ok_or_else(|| ApiError::NotFound(format!("Triple not found: {}", id)))?;
+
+    // Create new triple
+    let subject_node = state.engine.store.find_or_create_node(&req.new_subject).await?;
+    let object_node = state.engine.store.find_or_create_node(&req.new_object).await?;
+    let new_triple = Triple::new(subject_node.id, &req.new_predicate, object_node.id);
+    let new_triple_id = state.engine.store.insert_triple(new_triple).await?;
+
+    // Create a "supersedes" edge from new to old
+    let supersedes_node = state.engine.store.find_or_create_node(&old_triple_id.to_string()).await?;
+    let new_triple_node = state.engine.store.find_or_create_node(&new_triple_id.to_string()).await?;
+    let supersedes_triple = Triple::new(new_triple_node.id, "supersedes", supersedes_node.id);
+    state.engine.store.insert_triple(supersedes_triple).await?;
+
+    // Insert source if provided
+    let source_id = if let Some(source_req) = &req.source {
+        let source = Source::new(vec![new_triple_id], source_req.source_type.clone());
+        let source = if let Some(ref reference) = source_req.reference {
+            source.with_reference(reference)
+        } else {
+            source
+        };
+        let source_id = state.engine.store.insert_source(source).await?;
+        Some(source_id)
+    } else {
+        None
+    };
+
+    Ok(Json(InsertTriplesResponse {
+        triple_ids: vec![new_triple_id.to_string()],
+        source_id: source_id.map(|id| id.to_string()),
+    }))
+}
+
+/// GET /nodes/search — Search nodes by value substring (case-insensitive)
+async fn search_nodes(
+    State(state): State<ApiState>,
+    Query(params): Query<types::NodeSearchParams>,
+) -> Result<Json<Vec<NodeResponse>>, ApiError> {
+    let limit = params.limit.unwrap_or(20) as usize;
+    let nodes = state.engine.store.search_nodes(&params.q, limit).await?;
+    let results: Vec<NodeResponse> = nodes
+        .into_iter()
+        .map(|n| NodeResponse {
+            id: n.id.to_string(),
+            value: n.value,
+        })
+        .collect();
+    Ok(Json(results))
+}
+
+/// POST /triples/:id/sign — Sign a triple with the local keypair
+async fn sign_triple(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<types::SignTripleResponse>, ApiError> {
+    let triple_id = Uuid::parse_str(&id)
+        .map_err(|_| ApiError::BadRequest(format!("Invalid triple ID: {}", id)))?;
+
+    let triple = state.engine.store.get_triple(triple_id).await?
+        .ok_or_else(|| ApiError::NotFound(format!("Triple not found: {}", id)))?;
+
+    // Create message to sign: triple_id bytes
+    let message = triple_id.as_bytes();
+    let signature = state.engine.keypair.sign(message);
+    let signature_b64 = base64::engine::general_purpose::STANDARD.encode(signature);
+
+    Ok(Json(types::SignTripleResponse {
+        triple_id: id,
+        signature: signature_b64,
+        signer_did: state.engine.keypair.did_string(),
+    }))
+}
+
+/// GET /triples/:id/verify — Verify a triple's signature
+async fn verify_triple(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<types::VerifyTripleResponse>, ApiError> {
+    use crate::identity::Keypair;
+
+    let triple_id = Uuid::parse_str(&id)
+        .map_err(|_| ApiError::BadRequest(format!("Invalid triple ID: {}", id)))?;
+
+    let triple = state.engine.store.get_triple(triple_id).await?
+        .ok_or_else(|| ApiError::NotFound(format!("Triple not found: {}", id)))?;
+
+    let valid = if let (Some(origin_did), Some(sig_b64)) = (&triple.origin_did, &triple.signature) {
+        // Parse DID to get public key
+        // did:valence:key:<base58-pubkey>
+        if let Some(key_part) = origin_did.strip_prefix("did:valence:key:") {
+            let pubkey_bytes = bs58::decode(key_part).into_vec()
+                .map_err(|_| ApiError::Internal(anyhow::anyhow!("Invalid base58 in DID")))?;
+            if pubkey_bytes.len() != 32 {
+                return Ok(Json(types::VerifyTripleResponse {
+                    triple_id: id,
+                    valid: false,
+                    origin_did: Some(origin_did.clone()),
+                }));
+            }
+            let mut pubkey_arr = [0u8; 32];
+            pubkey_arr.copy_from_slice(&pubkey_bytes);
+
+            // Decode signature
+            let sig_bytes = base64::engine::general_purpose::STANDARD.decode(sig_b64)
+                .map_err(|_| ApiError::Internal(anyhow::anyhow!("Invalid base64 signature")))?;
+            if sig_bytes.len() != 64 {
+                return Ok(Json(types::VerifyTripleResponse {
+                    triple_id: id,
+                    valid: false,
+                    origin_did: Some(origin_did.clone()),
+                }));
+            }
+            let mut sig_arr = [0u8; 64];
+            sig_arr.copy_from_slice(&sig_bytes);
+
+            // Verify
+            let message = triple_id.as_bytes();
+            Keypair::verify(&pubkey_arr, message, &sig_arr)
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    Ok(Json(types::VerifyTripleResponse {
+        triple_id: id,
+        valid,
+        origin_did: triple.origin_did.clone(),
     }))
 }
 

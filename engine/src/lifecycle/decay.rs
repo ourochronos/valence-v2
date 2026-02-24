@@ -109,7 +109,7 @@ impl LifecycleManager {
         let triples = engine.store.query_triples(pattern).await?;
         
         // Calculate total weight before
-        let total_weight_before: f64 = triples.iter().map(|t| t.weight).sum();
+        let total_weight_before: f64 = triples.iter().map(|t| t.local_weight).sum();
         
         // Build graph view for centrality calculation
         let graph = GraphView::from_store(&*engine.store).await?;
@@ -145,7 +145,7 @@ impl LifecycleManager {
             object: None,
         };
         let remaining_triples = engine.store.query_triples(pattern).await?;
-        let total_weight_after: f64 = remaining_triples.iter().map(|t| t.weight).sum();
+        let total_weight_after: f64 = remaining_triples.iter().map(|t| t.local_weight).sum();
         
         Ok(DecayCycleResult {
             triples_decayed,
@@ -282,7 +282,7 @@ mod tests {
         assert!(triple_after.is_some());
         
         // Weight should be relatively high due to recent access
-        assert!(triple_after.unwrap().weight > 0.5);
+        assert!(triple_after.unwrap().local_weight > 0.5);
     }
 
     #[tokio::test]

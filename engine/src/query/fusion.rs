@@ -264,6 +264,143 @@ impl FusionScorer {
     }
 }
 
+// === Multi-Strategy Embedding Fusion ===
+
+/// Configuration for blending multiple embedding strategies at query time.
+///
+/// Each query type emphasizes different strategies:
+/// - Exploratory: global structure matters (spectral-heavy)
+/// - Precise: recent structure matters (spring-heavy)
+/// - Discovery: random walks find serendipity (node2vec-heavy)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
+pub struct EmbeddingBlendConfig {
+    /// Weight for spring embeddings (real-time, approximate)
+    pub spring_weight: f64,
+    /// Weight for node2vec embeddings (batch, neighborhood-aware)
+    pub node2vec_weight: f64,
+    /// Weight for spectral embeddings (periodic, global)
+    pub spectral_weight: f64,
+}
+
+impl Default for EmbeddingBlendConfig {
+    fn default() -> Self {
+        // Default: balanced blend
+        Self {
+            spring_weight: 0.34,
+            node2vec_weight: 0.33,
+            spectral_weight: 0.33,
+        }
+    }
+}
+
+impl EmbeddingBlendConfig {
+    /// Exploratory: "what's related to X?" — global structure matters
+    pub fn exploratory() -> Self {
+        Self {
+            spring_weight: 0.2,
+            node2vec_weight: 0.3,
+            spectral_weight: 0.5,
+        }
+    }
+
+    /// Precise: "what do I know about X?" — recent structure matters
+    pub fn precise() -> Self {
+        Self {
+            spring_weight: 0.5,
+            node2vec_weight: 0.3,
+            spectral_weight: 0.2,
+        }
+    }
+
+    /// Discovery: "surprise me" — random walks find serendipity
+    pub fn discovery() -> Self {
+        Self {
+            spring_weight: 0.2,
+            node2vec_weight: 0.5,
+            spectral_weight: 0.3,
+        }
+    }
+
+    /// Validate that weights are non-negative and sum to approximately 1.0
+    pub fn validate(&self) -> Result<(), String> {
+        let weights = [self.spring_weight, self.node2vec_weight, self.spectral_weight];
+
+        for (i, &weight) in weights.iter().enumerate() {
+            if weight < 0.0 {
+                return Err(format!("Embedding blend weight {} is negative: {}", i, weight));
+            }
+        }
+
+        let sum: f64 = weights.iter().sum();
+        if (sum - 1.0).abs() > 0.01 {
+            return Err(format!("Embedding blend weights sum to {}, expected ~1.0", sum));
+        }
+
+        Ok(())
+    }
+}
+
+/// Similarity scores from each embedding strategy for a single node.
+#[derive(Debug, Clone)]
+pub struct StrategyScores {
+    /// Cosine similarity from spring embeddings (None if unavailable)
+    pub spring: Option<f64>,
+    /// Cosine similarity from node2vec embeddings (None if unavailable)
+    pub node2vec: Option<f64>,
+    /// Cosine similarity from spectral embeddings (None if unavailable)
+    pub spectral: Option<f64>,
+}
+
+impl StrategyScores {
+    pub fn new(spring: Option<f64>, node2vec: Option<f64>, spectral: Option<f64>) -> Self {
+        Self { spring, node2vec, spectral }
+    }
+}
+
+/// Blends similarity scores from multiple embedding strategies into a single score.
+pub struct EmbeddingBlender {
+    config: EmbeddingBlendConfig,
+}
+
+impl EmbeddingBlender {
+    pub fn new(config: EmbeddingBlendConfig) -> Self {
+        Self { config }
+    }
+
+    /// Compute a blended similarity score from multiple strategy scores.
+    ///
+    /// If a strategy's score is None (embedding unavailable), its weight is
+    /// redistributed proportionally to the available strategies.
+    pub fn blend(&self, scores: &StrategyScores) -> f64 {
+        let mut total_weight = 0.0;
+        let mut weighted_sum = 0.0;
+
+        if let Some(s) = scores.spring {
+            weighted_sum += self.config.spring_weight * s;
+            total_weight += self.config.spring_weight;
+        }
+        if let Some(n) = scores.node2vec {
+            weighted_sum += self.config.node2vec_weight * n;
+            total_weight += self.config.node2vec_weight;
+        }
+        if let Some(sp) = scores.spectral {
+            weighted_sum += self.config.spectral_weight * sp;
+            total_weight += self.config.spectral_weight;
+        }
+
+        if total_weight == 0.0 {
+            return 0.0;
+        }
+
+        // Normalize by available weight (redistribute missing weights proportionally)
+        weighted_sum / total_weight
+    }
+
+    pub fn config(&self) -> &EmbeddingBlendConfig {
+        &self.config
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -590,5 +727,124 @@ mod tests {
 
         // With heavy graph distance weighting, close should win despite other signals
         assert!(score_close > score_distant);
+    }
+
+    // === Embedding Blend Tests ===
+
+    #[test]
+    fn test_embedding_blend_default() {
+        let config = EmbeddingBlendConfig::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_embedding_blend_presets() {
+        let exploratory = EmbeddingBlendConfig::exploratory();
+        assert!(exploratory.validate().is_ok());
+        assert!(exploratory.spectral_weight > exploratory.spring_weight);
+
+        let precise = EmbeddingBlendConfig::precise();
+        assert!(precise.validate().is_ok());
+        assert!(precise.spring_weight > precise.spectral_weight);
+
+        let discovery = EmbeddingBlendConfig::discovery();
+        assert!(discovery.validate().is_ok());
+        assert!(discovery.node2vec_weight > discovery.spring_weight);
+    }
+
+    #[test]
+    fn test_embedding_blend_validation() {
+        let bad = EmbeddingBlendConfig {
+            spring_weight: -0.1,
+            node2vec_weight: 0.6,
+            spectral_weight: 0.5,
+        };
+        assert!(bad.validate().is_err());
+
+        let bad_sum = EmbeddingBlendConfig {
+            spring_weight: 0.5,
+            node2vec_weight: 0.5,
+            spectral_weight: 0.5,
+        };
+        assert!(bad_sum.validate().is_err());
+    }
+
+    #[test]
+    fn test_blender_all_strategies() {
+        let blender = EmbeddingBlender::new(EmbeddingBlendConfig::precise());
+
+        let scores = StrategyScores::new(Some(0.9), Some(0.7), Some(0.5));
+        let blended = blender.blend(&scores);
+
+        // precise: spring=0.5, n2v=0.3, spectral=0.2
+        // expected: 0.5*0.9 + 0.3*0.7 + 0.2*0.5 = 0.45 + 0.21 + 0.10 = 0.76
+        assert!((blended - 0.76).abs() < 0.01, "Expected ~0.76, got {}", blended);
+    }
+
+    #[test]
+    fn test_blender_missing_strategy() {
+        let blender = EmbeddingBlender::new(EmbeddingBlendConfig {
+            spring_weight: 0.5,
+            node2vec_weight: 0.3,
+            spectral_weight: 0.2,
+        });
+
+        // Only spring available
+        let scores = StrategyScores::new(Some(0.8), None, None);
+        let blended = blender.blend(&scores);
+
+        // Should redistribute: only spring weight matters, normalized to 1.0
+        // Result = 0.8 (since it's the only signal)
+        assert!((blended - 0.8).abs() < 0.01, "Expected ~0.8, got {}", blended);
+    }
+
+    #[test]
+    fn test_blender_no_strategies() {
+        let blender = EmbeddingBlender::new(EmbeddingBlendConfig::default());
+
+        let scores = StrategyScores::new(None, None, None);
+        let blended = blender.blend(&scores);
+
+        assert_eq!(blended, 0.0);
+    }
+
+    #[test]
+    fn test_blender_two_strategies() {
+        let blender = EmbeddingBlender::new(EmbeddingBlendConfig {
+            spring_weight: 0.5,
+            node2vec_weight: 0.3,
+            spectral_weight: 0.2,
+        });
+
+        // Spring + spectral, no node2vec
+        let scores = StrategyScores::new(Some(0.9), None, Some(0.5));
+
+        let blended = blender.blend(&scores);
+
+        // Available weight = 0.5 + 0.2 = 0.7
+        // Weighted sum = 0.5*0.9 + 0.2*0.5 = 0.45 + 0.10 = 0.55
+        // Normalized = 0.55 / 0.7 = 0.7857...
+        assert!((blended - 0.7857).abs() < 0.01, "Expected ~0.786, got {}", blended);
+    }
+
+    #[test]
+    fn test_blender_exploratory_prefers_spectral() {
+        let blender = EmbeddingBlender::new(EmbeddingBlendConfig::exploratory());
+
+        // Spectral high, spring low
+        let spectral_wins = StrategyScores::new(Some(0.3), Some(0.5), Some(0.9));
+        // Spectral low, spring high
+        let spring_wins = StrategyScores::new(Some(0.9), Some(0.5), Some(0.3));
+
+        let score_spectral = blender.blend(&spectral_wins);
+        let score_spring = blender.blend(&spring_wins);
+
+        // With exploratory weights (spectral=0.5, n2v=0.3, spring=0.2),
+        // the high-spectral case should score higher
+        assert!(
+            score_spectral > score_spring,
+            "Exploratory should prefer high-spectral: spectral_blend={:.3}, spring_blend={:.3}",
+            score_spectral, score_spring
+        );
     }
 }

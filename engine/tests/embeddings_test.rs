@@ -54,10 +54,10 @@ async fn test_embeddings_workflow() {
     assert!(embedding_store.get(javascript.id).is_some(), "JavaScript should have embedding");
     assert!(embedding_store.get(systems.id).is_some(), "Systems Programming should have embedding");
     
-    // Verify all similarities are in valid range [-1, 1]
+    // Verify all similarities are in valid range [-1, 1] (with floating point tolerance)
     for (node_id, similarity) in &similar {
         assert!(
-            (&-1.0..=&1.0).contains(&similarity),
+            *similarity >= -1.0 - 1e-6 && *similarity <= 1.0 + 1e-6,
             "Similarity for node {:?} should be in [-1, 1], got {}",
             node_id, similarity
         );

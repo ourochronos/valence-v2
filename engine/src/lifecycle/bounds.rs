@@ -181,7 +181,7 @@ impl MemoryBounds {
         
         // Sort by weight ascending (lowest first)
         triples.sort_by(|a, b| {
-            a.weight.partial_cmp(&b.weight).unwrap_or(std::cmp::Ordering::Equal)
+            a.local_weight.partial_cmp(&b.local_weight).unwrap_or(std::cmp::Ordering::Equal)
         });
         
         // Evict lowest-weight triples

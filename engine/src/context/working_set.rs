@@ -419,9 +419,9 @@ impl WorkingSet {
                             break;
                         }
 
-                        working_set.add_node(triple.subject, triple.weight);
-                        working_set.add_node(triple.object, triple.weight);
-                        working_set.add_triple(triple.clone(), triple.weight);
+                        working_set.add_node(triple.subject, triple.local_weight);
+                        working_set.add_node(triple.object, triple.local_weight);
+                        working_set.add_triple(triple.clone(), triple.local_weight);
                     }
                 }
 
@@ -441,11 +441,11 @@ impl WorkingSet {
                             break;
                         }
 
-                        working_set.add_node(triple.subject, triple.weight * 0.7);
-                        working_set.add_node(triple.object, triple.weight * 0.7);
+                        working_set.add_node(triple.subject, triple.local_weight * 0.7);
+                        working_set.add_node(triple.object, triple.local_weight * 0.7);
 
                         // Second hop triples get lower confidence (decay)
-                        let decayed_confidence = triple.weight * 0.5;
+                        let decayed_confidence = triple.local_weight * 0.5;
                         working_set.add_triple(triple.clone(), decayed_confidence);
                     }
                 }
@@ -533,9 +533,9 @@ impl WorkingSet {
                     break;
                 }
 
-                working_set.add_node(triple.subject, triple.weight);
-                working_set.add_node(triple.object, triple.weight);
-                working_set.add_triple(triple.clone(), triple.weight);
+                working_set.add_node(triple.subject, triple.local_weight);
+                working_set.add_node(triple.object, triple.local_weight);
+                working_set.add_triple(triple.clone(), triple.local_weight);
             }
         }
 
