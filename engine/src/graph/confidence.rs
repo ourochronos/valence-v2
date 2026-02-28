@@ -5,6 +5,7 @@ use anyhow::Result;
 
 use crate::models::{NodeId, TripleId};
 use crate::storage::TripleStore;
+use crate::supersession;
 use super::view::GraphView;
 use super::algorithms::{pagerank, count_distinct_paths};
 
@@ -52,17 +53,23 @@ impl DynamicConfidence {
         triple_id: TripleId,
     ) -> Result<f64> {
         let sources = store.get_sources_for_triple(triple_id).await?;
-        
+
         if sources.is_empty() {
             return Ok(0.0);
         }
 
-        // Count sources
-        let source_count = sources.len() as f64;
-        
+        // Walk each source's supersession chain and accumulate weighted source counts.
+        // Authoritative sources (head of chain) contribute fully; superseded ones are
+        // penalized by their chain depth via the de-rank multiplier.
+        let mut weighted_count = 0.0_f64;
+        for source in &sources {
+            let multiplier = supersession::derank_multiplier(store, source.id).await?;
+            weighted_count += multiplier;
+        }
+
         // Normalize by max expected sources (e.g., 10)
-        let source_score = (source_count / 10.0).min(1.0);
-        
+        let source_score = (weighted_count / 10.0).min(1.0);
+
         Ok(source_score)
     }
 

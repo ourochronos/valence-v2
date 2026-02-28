@@ -414,6 +414,17 @@ impl TripleStore for SledStore {
         Ok(sources)
     }
 
+    async fn get_source(&self, source_id: SourceId) -> Result<Option<Source>> {
+        match self.sources.get(uuid_bytes(&source_id)).context("Failed to get source")? {
+            Some(bytes) => {
+                let source: Source = bincode::deserialize(&bytes)
+                    .context("Failed to deserialize source")?;
+                Ok(Some(source))
+            }
+            None => Ok(None),
+        }
+    }
+
     async fn neighbors(&self, node_id: NodeId, depth: u32) -> Result<Vec<Triple>> {
         if depth == 0 {
             return Ok(Vec::new());

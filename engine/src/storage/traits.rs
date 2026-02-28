@@ -32,6 +32,7 @@ pub trait TripleStore: Send + Sync {
     // Source operations
     async fn insert_source(&self, source: Source) -> Result<SourceId>;
     async fn get_sources_for_triple(&self, triple_id: TripleId) -> Result<Vec<Source>>;
+    async fn get_source(&self, source_id: SourceId) -> Result<Option<Source>>;
 
     // Graph operations
     async fn neighbors(&self, node_id: NodeId, depth: u32) -> Result<Vec<Triple>>;
