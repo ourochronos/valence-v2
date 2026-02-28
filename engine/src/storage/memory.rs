@@ -192,6 +192,12 @@ impl TripleStore for MemoryStore {
         Ok(sources)
     }
 
+    async fn get_source(&self, source_id: SourceId) -> Result<Option<Source>> {
+        let sources_map = self.sources.read()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire read lock on sources: {}", e))?;
+        Ok(sources_map.get(&source_id).cloned())
+    }
+
     async fn neighbors(&self, node_id: NodeId, depth: u32) -> Result<Vec<Triple>> {
         if depth == 0 {
             return Ok(Vec::new());

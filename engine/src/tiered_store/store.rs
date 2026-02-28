@@ -540,6 +540,19 @@ impl TripleStore for TieredStore {
         Ok(vec![])
     }
     
+    async fn get_source(&self, source_id: SourceId) -> Result<Option<Source>> {
+        // Try hot first
+        if let Some(source) = self.hot.get_source(source_id).await? {
+            return Ok(Some(source));
+        }
+        // Fall back to cold
+        #[cfg(feature = "postgres")]
+        if let Some(ref cold) = self.cold {
+            return cold.get_source(source_id).await;
+        }
+        Ok(None)
+    }
+
     async fn neighbors(&self, node_id: NodeId, depth: u32) -> Result<Vec<Triple>> {
         // Query both tiers and merge
         let mut results = self.hot.neighbors(node_id, depth).await?;

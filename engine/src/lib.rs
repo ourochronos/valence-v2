@@ -24,6 +24,7 @@ pub mod resilience;  // Graceful degradation and fallback strategies
 pub mod inference;   // Inference training loop: query patterns feed back to improve retrieval
 pub mod identity;    // Ed25519 keypairs for signing triples
 pub mod predicates;  // Well-known predicate constants
+pub mod supersession; // Supersession chain flattening and de-ranking
 pub mod vkb;         // Sessions, exchanges, patterns, insights
 #[cfg(feature = "federation")]
 pub mod federation;  // P2P via libp2p (gossipsub, kademlia, request-response)

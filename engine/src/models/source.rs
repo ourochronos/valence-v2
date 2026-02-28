@@ -8,6 +8,9 @@ use super::triple::TripleId;
 /// Unique identifier for a source.
 pub type SourceId = Uuid;
 
+/// Maximum supersession chain depth to walk before declaring a cycle.
+pub const MAX_CHAIN_DEPTH: usize = 64;
+
 /// How a piece of knowledge was derived.
 ///
 /// Tracks the provenance of triples to support confidence scoring and explanation.
@@ -31,6 +34,15 @@ pub enum SourceType {
 ///
 /// Sources provide context about where knowledge came from, enabling confidence scoring,
 /// explanation, and trust propagation through the graph.
+///
+/// Supersession chains are encoded via `superseded_by`: if this source has been replaced
+/// by a newer source, `superseded_by` points to that newer source.  Walking the chain
+/// forward (following `superseded_by` links) reaches the authoritative *head*.
+///
+/// Example: A supersedes B supersedes C
+///   C.superseded_by = Some(B.id)
+///   B.superseded_by = Some(A.id)
+///   A.superseded_by = None   <- head / authoritative
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Source {
     /// Unique identifier for this source
@@ -45,6 +57,12 @@ pub struct Source {
     pub created_at: DateTime<Utc>,
     /// Optional metadata (arbitrary JSON)
     pub metadata: Option<serde_json::Value>,
+    /// If this source has been superseded, points to the newer authoritative source.
+    ///
+    /// `None` means this source is authoritative (head of its chain).
+    /// `Some(id)` means this source is historical; follow `id` to reach the head.
+    #[serde(default)]
+    pub superseded_by: Option<SourceId>,
 }
 
 impl Source {
@@ -59,6 +77,7 @@ impl Source {
             reference: None,
             created_at: Utc::now(),
             metadata: None,
+            superseded_by: None,
         }
     }
 
@@ -69,5 +88,18 @@ impl Source {
     pub fn with_reference(mut self, reference: impl Into<String>) -> Self {
         self.reference = Some(reference.into());
         self
+    }
+
+    /// Mark this source as superseded by `newer_id` (builder pattern).
+    ///
+    /// After calling this, the source is considered historical; `newer_id` is authoritative.
+    pub fn mark_superseded_by(mut self, newer_id: SourceId) -> Self {
+        self.superseded_by = Some(newer_id);
+        self
+    }
+
+    /// Returns `true` if this source has been superseded and is no longer authoritative.
+    pub fn is_superseded(&self) -> bool {
+        self.superseded_by.is_some()
     }
 }

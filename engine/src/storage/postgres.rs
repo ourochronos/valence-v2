@@ -368,7 +368,7 @@ impl TripleStore for PgStore {
     async fn get_sources_for_triple(&self, triple_id: TripleId) -> Result<Vec<Source>> {
         let rows = sqlx::query(
             r#"
-            SELECT s.id, s.source_type, s.reference, s.created_at, s.metadata
+            SELECT s.id, s.source_type, s.reference, s.created_at, s.metadata, s.superseded_by
             FROM sources s
             JOIN source_triples st ON s.id = st.source_id
             WHERE st.triple_id = $1
@@ -414,10 +414,53 @@ impl TripleStore for PgStore {
                 reference: row.get("reference"),
                 created_at: row.get("created_at"),
                 metadata: row.get("metadata"),
+                superseded_by: row.try_get("superseded_by").unwrap_or(None),
             });
         }
 
         Ok(sources)
+    }
+
+    async fn get_source(&self, source_id: SourceId) -> Result<Option<Source>> {
+        let row = sqlx::query(
+            r#"SELECT s.id, s.source_type, s.reference, s.created_at, s.metadata, s.superseded_by
+               FROM sources s WHERE s.id = $1"#
+        )
+        .bind(source_id)
+        .fetch_optional(&self.pool)
+        .await
+        .context("Failed to get source")?;
+
+        let Some(row) = row else { return Ok(None) };
+
+        let source_id: SourceId = row.get("id");
+        let triple_rows = sqlx::query("SELECT triple_id FROM source_triples WHERE source_id = $1")
+            .bind(source_id)
+            .fetch_all(&self.pool)
+            .await
+            .context("Failed to get triple IDs for source")?;
+        let triple_ids: Vec<TripleId> = triple_rows.into_iter().map(|r| r.get("triple_id")).collect();
+
+        let source_type_str: String = row.get("source_type");
+        let source_type = match source_type_str.as_str() {
+            "conversation" => SourceType::Conversation,
+            "observation" => SourceType::Observation,
+            "inference" => SourceType::Inference,
+            "user_input" => SourceType::UserInput,
+            "document" => SourceType::Document,
+            "decomposition" => SourceType::Decomposition,
+            _ => SourceType::UserInput,
+        };
+
+        Ok(Some(Source {
+            id: source_id,
+            triple_ids,
+            source_type,
+            reference: row.get("reference"),
+            created_at: row.get("created_at"),
+            metadata: row.get("metadata"),
+            superseded_by: row.get("superseded_by"),
+        }))
     }
 
     async fn neighbors(&self, node_id: NodeId, depth: u32) -> Result<Vec<Triple>> {
