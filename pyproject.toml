@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "valence-v2"
+version = "2.0.0"
+description = "Python client library for the Valence v2 knowledge substrate — triple-based storage with topology-derived spectral embeddings."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "ourochronos" },
+]
+requires-python = ">=3.10"
+keywords = [
+    "knowledge-graph",
+    "triples",
+    "semantic-search",
+    "spectral-embeddings",
+    "graph-database",
+    "mcp",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+
+# Zero mandatory dependencies — uses only the stdlib HTTP stack.
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov",
+    "ruff",
+    "mypy",
+]
+httpx = [
+    # Drop-in async transport upgrade; install if you prefer httpx.
+    "httpx>=0.27",
+]
+
+[project.urls]
+Homepage = "https://github.com/ourochronos/valence-v2"
+Repository = "https://github.com/ourochronos/valence-v2"
+"Bug Tracker" = "https://github.com/ourochronos/valence-v2/issues"
+Changelog = "https://github.com/ourochronos/valence-v2/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/ourochronos/valence-v2/blob/main/README.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/valence"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/",
+    "pyproject.toml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+]
